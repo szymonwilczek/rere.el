@@ -407,5 +407,41 @@ index 0000000..1111111 100644
     (let ((sec (magit-current-section)))
       (should (oref sec hidden)))))
 
+;;;; Persistence tests
+
+(ert-deftest rere-test-save-and-load-state ()
+  "Saving and loading reviewed state persists across sessions."
+  (let ((tmp-dir (make-temp-file "rere-test-rebase-" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rere--rebase-dir)
+                   (lambda () tmp-dir)))
+          (let ((rere--commit-info '(:sha "abc1234"))
+                (rere--reviewed (make-hash-table :test 'equal)))
+            (puthash "hash1" t rere--reviewed)
+            (puthash "hash2" t rere--reviewed)
+            (rere--save-reviewed-state)
+            (let ((loaded (rere--load-reviewed-state)))
+              (should (= (hash-table-count loaded) 2))
+              (should (gethash "hash1" loaded))
+              (should (gethash "hash2" loaded)))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest rere-test-cleanup-old-states ()
+  "Switching commits cleans up previous review state files."
+  (let ((tmp-dir (make-temp-file "rere-test-rebase-" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rere--rebase-dir)
+                   (lambda () tmp-dir)))
+          (let ((old-file (expand-file-name "rere-reviewed-old111"
+                                            tmp-dir))
+                (cur-file (expand-file-name "rere-reviewed-cur222"
+                                            tmp-dir)))
+            (with-temp-file old-file (insert "hash1\n"))
+            (with-temp-file cur-file (insert "hash2\n"))
+            (rere--cleanup-old-reviewed-states "cur222")
+            (should-not (file-exists-p old-file))
+            (should (file-exists-p cur-file))))
+      (delete-directory tmp-dir t))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
