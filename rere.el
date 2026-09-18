@@ -4,7 +4,7 @@
 
 ;; Author:  Szymon Wilczek <swilczek.lx@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (magit "3.0"))
+;; Package-Requires: ((emacs "28.1") (magit "3.0") (magit-section "3.0"))
 ;; Keywords: vc tools
 ;; URL: https://github.com/szymonwilczek/rere.el
 
