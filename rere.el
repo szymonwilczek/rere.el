@@ -498,8 +498,9 @@ Otherwise, try to preserve cursor position."
     ;; restore position
     (or (and saved-line-hash
              (rere--goto-line-hash saved-line-hash))
-        (rere--goto-pending-section)
         (rere--goto-section-path saved-section-path)
+        (rere--goto-first-pending)
+        (rere--goto-pending-section)
         (goto-char (point-min)))))
 
 (defun rere--goto-pending-section ()
@@ -514,6 +515,25 @@ Otherwise, try to preserve cursor position."
         (forward-line 1)))
     (when pos
       (goto-char pos)
+      t)))
+
+(defun rere--goto-first-pending ()
+  "Move point to the first pending reviewable diff line.
+Return t if found, nil otherwise."
+  (let ((found nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not found) (not (eobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((val (oref section value)))
+              (when (and (rere-diff-line-p val)
+                         (rere--pending-p val))
+                (setq found (point))))))
+        (unless found
+          (forward-line 1))))
+    (when found
+      (goto-char found)
       t)))
 
 (defun rere--current-section-path ()
@@ -535,14 +555,15 @@ Otherwise, try to preserve cursor position."
       (save-excursion
         (goto-char (point-min))
         (while (and (not pos) (not (eobp)))
-          (when-let* ((section
-                       (magit-current-section)))
-            (let ((val (oref section value)))
-              (when (and (rere-diff-line-p val)
-                         (equal
-                          (rere-diff-line-hash val)
-                          hash))
-                (setq pos (point)))))
+          (unless (invisible-p (point))
+            (when-let* ((section
+                         (magit-current-section)))
+              (let ((val (oref section value)))
+                (when (and (rere-diff-line-p val)
+                           (equal
+                            (rere-diff-line-hash val)
+                            hash))
+                  (setq pos (point))))))
           (forward-line 1)))
       (when pos
         (goto-char pos)
@@ -646,15 +667,21 @@ Return t if found."
                    dl))))))))))
 
 (defun rere--collect-file-lines (file-diff pred)
-  "Collect lines from FILE-DIFF matching PRED.
-Return alist of (hunk . matching-lines)."
+  "Collect lines from FILE-DIFF matching PRED with surrounding context.
+Return alist of (hunk . lines-to-render)."
   (let ((result '()))
     (dolist (hunk (rere-file-diff-hunks file-diff))
-      (let ((matching
-             (cl-remove-if-not
-              pred (rere-hunk-lines hunk))))
-        (when matching
-          (push (cons hunk matching) result))))
+      (let ((has-matching
+             (cl-some pred (rere-hunk-lines hunk))))
+        (when has-matching
+          (let ((lines
+                 (cl-remove-if-not
+                  (lambda (dl)
+                    (or (eq (rere-diff-line-type dl) 'context)
+                        (funcall pred dl)))
+                  (rere-hunk-lines hunk))))
+            (when lines
+              (push (cons hunk lines) result))))))
     (nreverse result)))
 
 (defun rere--insert-single-line (dl)
@@ -663,6 +690,7 @@ Return alist of (hunk . matching-lines)."
          (face (pcase type
                  ('added 'magit-diff-added)
                  ('removed 'magit-diff-removed)
+                 ('context 'magit-diff-context)
                  (_ 'default)))
          (prefix (pcase type
                    ('added "+")
@@ -853,6 +881,69 @@ If on a file header or diff line, toggle that file."
                  (> (point) (oref target-sec content)))
         (goto-char (oref target-sec start))))))
 
+(defun rere-next-diff-line ()
+  "Move point to next reviewable diff line, skipping context."
+  (interactive)
+  (let ((found nil)
+        (orig (point)))
+    (save-excursion
+      (forward-line 1)
+      (while (and (not found) (not (eobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((val (oref section value)))
+              (when (and (rere-diff-line-p val)
+                         (rere--reviewable-p val))
+                (setq found (point))))))
+        (unless found
+          (forward-line 1))))
+    (if found
+        (goto-char found)
+      (let ((sec-pos nil))
+        (save-excursion
+          (forward-line 1)
+          (while (and (not sec-pos) (not (eobp)))
+            (unless (invisible-p (point))
+              (when-let* ((section (magit-current-section)))
+                (when (memq (oref section type)
+                            '(rere-pending rere-reviewed))
+                  (setq sec-pos (oref section start)))))
+            (forward-line 1)))
+        (if sec-pos
+            (goto-char sec-pos)
+          (goto-char orig))))))
+
+(defun rere-previous-diff-line ()
+  "Move point to previous reviewable diff line, skipping context."
+  (interactive)
+  (let ((found nil)
+        (orig (point)))
+    (save-excursion
+      (forward-line -1)
+      (while (and (not found) (not (bobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((val (oref section value)))
+              (when (and (rere-diff-line-p val)
+                         (rere--reviewable-p val))
+                (setq found (point))))))
+        (unless found
+          (forward-line -1))))
+    (if found
+        (goto-char found)
+      (let ((sec-pos nil))
+        (save-excursion
+          (forward-line -1)
+          (while (and (not sec-pos) (not (bobp)))
+            (unless (invisible-p (point))
+              (when-let* ((section (magit-current-section)))
+                (when (eq (oref section type) 'rere-pending)
+                  (setq sec-pos (oref section start)))))
+            (forward-line -1)))
+        (if sec-pos
+            (goto-char sec-pos)
+          (goto-char orig))))))
+
 (defun rere-open-file ()
   "Open the source file at the diff line at point."
   (interactive)
@@ -932,6 +1023,10 @@ Pending."
     (define-key map (kbd "r") #'rere-refresh)
     (define-key map (kbd "TAB") #'rere-toggle-section)
     (define-key map (kbd "<tab>") #'rere-toggle-section)
+    (define-key map (kbd "n") #'rere-next-diff-line)
+    (define-key map (kbd "p") #'rere-previous-diff-line)
+    (define-key map (kbd "j") #'rere-next-diff-line)
+    (define-key map (kbd "k") #'rere-previous-diff-line)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
@@ -953,8 +1048,10 @@ shadow them."
       (kbd "RET") #'rere-open-file
       (kbd "TAB") #'rere-toggle-section
       (kbd "<tab>") #'rere-toggle-section
-      (kbd "j") #'next-line
-      (kbd "k") #'previous-line
+      (kbd "j") #'rere-next-diff-line
+      (kbd "k") #'rere-previous-diff-line
+      (kbd "n") #'rere-next-diff-line
+      (kbd "p") #'rere-previous-diff-line
       (kbd "g g") #'beginning-of-buffer
       (kbd "G") #'end-of-buffer)
     (evil-define-key 'visual rere-mode-map
@@ -1005,7 +1102,8 @@ Only works during an interactive git rebase."
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
     (rere--render-buffer)
-    (goto-char (point-min))))
+    (or (rere--goto-first-pending)
+        (goto-char (point-min)))))
 
 (provide 'rere)
 ;;; rere.el ends here

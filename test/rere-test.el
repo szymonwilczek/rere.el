@@ -461,5 +461,86 @@ index 0000000..1111111 100644
       (should (get-char-property (oref rev-sec content)
                                  'invisible)))))
 
+;;;; Context and diff navigation tests
+
+(ert-deftest rere-test-collect-file-lines-includes-context ()
+  "Collecting lines for display includes surrounding context."
+  (let* ((files (rere--parse-diff rere-test--sample-diff))
+         (foo-file (car files))
+         (rere--reviewed (make-hash-table :test 'equal))
+         (collected (rere--collect-file-lines
+                     foo-file #'rere--pending-p))
+         (hunk-lines (cdar collected))
+         (types (mapcar #'rere-diff-line-type hunk-lines)))
+    (should (equal types
+                   '(context removed added added context)))))
+
+(ert-deftest rere-test-collect-excludes-hunk-without-matches ()
+  "Hunk with no matching reviewable lines is omitted."
+  (let* ((files (rere--parse-diff rere-test--simple-diff))
+         (f-file (car files))
+         (hunk (car (rere-file-diff-hunks f-file)))
+         (added-line (nth 1 (rere-hunk-lines hunk)))
+         (rere--reviewed (make-hash-table :test 'equal)))
+    ;; mark the only added line as reviewed
+    (puthash (rere-diff-line-hash added-line) t rere--reviewed)
+    ;; when collecting pending lines, hunk has no pending lines
+    (should (null (rere--collect-file-lines
+                   f-file #'rere--pending-p)))))
+
+(ert-deftest rere-test-goto-first-pending ()
+  "Moves point to first reviewable line, skipping context."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (should (rere--goto-first-pending))
+    (let* ((sec (magit-current-section))
+           (val (oref sec value)))
+      (should (rere-diff-line-p val))
+      (should (eq (rere-diff-line-type val) 'removed))
+      (should (equal (rere-diff-line-content val)
+                     "  (message \"old\")")))))
+
+(ert-deftest rere-test-next-and-previous-diff-line ()
+  "Navigation commands skip context lines and headings."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (rere--goto-first-pending)
+    ;; initially on first reviewable line: - (message "old")
+    (let ((val1 (oref (magit-current-section) value)))
+      (should (eq (rere-diff-line-type val1) 'removed)))
+    ;; next diff line -> + (message "new")
+    (rere-next-diff-line)
+    (let ((val2 (oref (magit-current-section) value)))
+      (should (eq (rere-diff-line-type val2) 'added))
+      (should (equal (rere-diff-line-content val2)
+                     "  (message \"new\")")))
+    ;; next diff line -> + (message "added")
+    (rere-next-diff-line)
+    (let ((val3 (oref (magit-current-section) value)))
+      (should (eq (rere-diff-line-type val3) 'added))
+      (should (equal (rere-diff-line-content val3)
+                     "  (message \"added\")")))
+    ;; next diff line jumps over context to next file: - (removed-call)
+    (rere-next-diff-line)
+    (let ((val4 (oref (magit-current-section) value)))
+      (should (eq (rere-diff-line-type val4) 'removed))
+      (should (equal (rere-diff-line-content val4)
+                     "  (removed-call)")))
+    ;; previous diff line jumps back to + (message "added")
+    (rere-previous-diff-line)
+    (let ((val5 (oref (magit-current-section) value)))
+      (should (eq (rere-diff-line-type val5) 'added))
+      (should (equal (rere-diff-line-content val5)
+                     "  (message \"added\")")))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
