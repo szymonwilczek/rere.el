@@ -52,6 +52,14 @@
 (require 'cl-lib)
 (require 'subr-x)
 
+(declare-function evil-define-key "evil-core"
+                  (state keymap key def &rest bindings))
+(declare-function evil-set-initial-state "evil-core"
+                  (mode state))
+(declare-function evil-normal-state "evil-states" ())
+(declare-function evil-visual-state-p "evil-states"
+                  (&optional state))
+
 ;;;; Customization
 
 (defgroup rere nil
@@ -94,7 +102,7 @@
 (defvar-local rere--diff-files nil
   "Parsed diff: list of `rere-file-diff'.")
 
-(defvar-local rere--reviewed (make-hash-table :test 'equal)
+(defvar-local rere--reviewed nil
   "Hash table of reviewed line hashes.")
 
 (defvar-local rere--commit-info nil
@@ -296,8 +304,9 @@ Only added and removed lines are reviewable."
 
 (defun rere--reviewed-p (diff-line)
   "Return non-nil if DIFF-LINE has been reviewed."
-  (gethash (rere-diff-line-hash diff-line)
-           rere--reviewed))
+  (and rere--reviewed
+       (gethash (rere-diff-line-hash diff-line)
+                rere--reviewed)))
 
 (defun rere--pending-p (diff-line)
   "Return non-nil if DIFF-LINE is pending review."
@@ -323,13 +332,17 @@ Only added and removed lines are reviewable."
 (defun rere--accept-line (diff-line)
   "Mark DIFF-LINE as reviewed."
   (when (rere--reviewable-p diff-line)
+    (unless rere--reviewed
+      (setq rere--reviewed
+            (make-hash-table :test 'equal)))
     (puthash (rere-diff-line-hash diff-line)
              t rere--reviewed)))
 
 (defun rere--unaccept-line (diff-line)
   "Mark DIFF-LINE as not reviewed (pending)."
-  (remhash (rere-diff-line-hash diff-line)
-           rere--reviewed))
+  (when rere--reviewed
+    (remhash (rere-diff-line-hash diff-line)
+             rere--reviewed)))
 
 (defun rere--accept-hunk-lines (hunk)
   "Mark all reviewable lines in HUNK as reviewed."
@@ -343,22 +356,124 @@ Only added and removed lines are reviewable."
 
 ;;;; Buffer rendering
 
-(defun rere--render-buffer ()
+(defun rere--pending-diff-lines ()
+  "Return list of all diff lines currently pending review."
+  (let ((lines nil))
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (rere--pending-p dl)
+            (push dl lines)))))
+    (nreverse lines)))
+
+(defun rere--reviewed-diff-lines ()
+  "Return list of all diff lines currently reviewed."
+  (let ((lines nil))
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (rere--reviewed-p dl)
+            (push dl lines)))))
+    (nreverse lines)))
+
+(defun rere--region-elements (beg end)
+  "Collect all reviewable diff lines between BEG and END.
+Expands any hunks or file sections intersecting the region."
+  (let ((b (min beg end))
+        (e (max beg end))
+        (lines '()))
+    (save-excursion
+      (goto-char b)
+      (while (< (point) e)
+        (when-let* ((section (magit-current-section)))
+          (let ((val (oref section value)))
+            (cond
+             ((rere-diff-line-p val)
+              (unless (memq val lines)
+                (push val lines)))
+             ((rere-hunk-p val)
+              (dolist (dl (rere-hunk-lines val))
+                (unless (memq dl lines)
+                  (push dl lines))))
+             ((rere-file-diff-p val)
+              (dolist (h (rere-file-diff-hunks val))
+                (dolist (dl (rere-hunk-lines h))
+                  (unless (memq dl lines)
+                    (push dl lines))))))))
+        (forward-line 1)))
+    (nreverse lines)))
+
+(defun rere--find-next-target (to-remove all-lines)
+  "Find hash of the line to focus after removing TO-REMOVE from ALL-LINES."
+  (when (and to-remove all-lines)
+    (let* ((to-remove-hashes
+            (mapcar #'rere-diff-line-hash to-remove))
+           (last-dl (car (last to-remove)))
+           (first-dl (car to-remove))
+           (tail (cdr (cl-member (rere-diff-line-hash last-dl)
+                                 all-lines
+                                 :key #'rere-diff-line-hash
+                                 :test #'equal)))
+           (next-dl
+            (cl-find-if-not
+             (lambda (dl)
+               (member (rere-diff-line-hash dl)
+                       to-remove-hashes))
+             tail)))
+      (if next-dl
+          (rere-diff-line-hash next-dl)
+        (let* ((pos (cl-position
+                     (rere-diff-line-hash first-dl)
+                     all-lines
+                     :key #'rere-diff-line-hash
+                     :test #'equal))
+               (head (and pos (> pos 0)
+                          (cl-subseq all-lines 0 pos)))
+               (prev-dl
+                (and head
+                     (cl-find-if-not
+                      (lambda (dl)
+                        (member (rere-diff-line-hash dl)
+                                to-remove-hashes))
+                      (reverse head)))))
+          (when prev-dl
+            (rere-diff-line-hash prev-dl)))))))
+
+(defun rere--render-buffer (&optional target-hash)
   "Render the rere review buffer content.
-Preserves point position relative to diff lines."
+If TARGET-HASH is provided, move point to that line.
+Otherwise, try to preserve cursor position."
   (let ((inhibit-read-only t)
         (saved-section-path (rere--current-section-path))
-        (saved-line-hash (rere--line-hash-at-point)))
+        (saved-line-hash (or target-hash
+                             (rere--line-hash-at-point))))
     (erase-buffer)
     (rere--count-lines)
-    (rere--insert-header)
-    (rere--insert-pending-section)
-    (rere--insert-reviewed-section)
-    (rere--insert-footer)
+    (magit-insert-section (magit-root-section)
+      (rere--insert-header)
+      (rere--insert-pending-section)
+      (rere--insert-reviewed-section)
+      (rere--insert-footer))
     ;; restore position
-    (or (rere--goto-line-hash saved-line-hash)
+    (or (and saved-line-hash
+             (rere--goto-line-hash saved-line-hash))
+        (rere--goto-pending-section)
         (rere--goto-section-path saved-section-path)
         (goto-char (point-min)))))
+
+(defun rere--goto-pending-section ()
+  "Move point to the Pending review section."
+  (let ((pos nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not pos) (not (eobp)))
+        (when-let* ((section (magit-current-section)))
+          (when (eq (oref section type) 'rere-pending)
+            (setq pos (oref section start))))
+        (forward-line 1)))
+    (when pos
+      (goto-char pos)
+      t)))
 
 (defun rere--current-section-path ()
   "Return path identifier for current section."
@@ -438,7 +553,7 @@ Return t if found."
   "Insert the Pending review section."
   (let ((pending-count
          (- rere--total-lines rere--reviewed-count)))
-    (magit-insert-section (rere-pending nil t)
+    (magit-insert-section (rere-pending nil nil)
       (magit-insert-heading
         (format "Pending review (%d)\n" pending-count))
       (if (zerop pending-count)
@@ -571,81 +686,130 @@ Return alist of (hunk . matching-lines)."
             (setq s (oref s parent)))
           (when s (oref s value))))))))
 
-(defun rere-accept-line ()
-  "Accept the diff line at point.
-Move it from Pending to Reviewed."
-  (interactive)
-  (if-let* ((dl (rere--section-diff-line)))
-      (progn
-        (rere--accept-line dl)
-        (rere--render-buffer)
-        (rere--advance-to-next-pending))
-    (user-error "[rere] No diff line at point")))
+(defalias 'rere-accept-line #'rere-smart-accept)
 
 (defun rere-smart-accept ()
-  "Smart accept: file, hunk, or line at point.
+  "Smart accept: region, file, hunk, or line at point.
+In visual mode or when region is active, accept selected lines.
 On a file heading, accept entire file.
 On a hunk heading, accept entire hunk.
 On a diff line, accept that line."
   (interactive)
-  (let ((section (magit-current-section)))
-    (unless section
-      (user-error "[rere] No section at point"))
-    (let ((val (oref section value)))
-      (cond
-       ((rere-file-diff-p val)
-        (rere--accept-file-lines val))
-       ((rere-hunk-p val)
-        (rere--accept-hunk-lines val))
-       ((rere-diff-line-p val)
-        (rere--accept-line val))
-       (t
-        (user-error
-         "[rere] Not on a file, hunk, or line"))))
-    (rere--render-buffer)
-    (rere--advance-to-next-pending)))
+  (let* ((in-visual (and (bound-and-true-p evil-mode)
+                         (evil-visual-state-p)))
+         (has-region (or in-visual (use-region-p)))
+         (to-accept nil)
+         (all-pending (rere--pending-diff-lines)))
+    (if has-region
+        (progn
+          (setq to-accept
+                (cl-remove-if-not
+                 #'rere--pending-p
+                 (rere--region-elements
+                  (region-beginning) (region-end))))
+          (when in-visual
+            (evil-normal-state))
+          (deactivate-mark))
+      (when-let* ((section (magit-current-section)))
+        (let ((val (oref section value)))
+          (setq to-accept
+                (cond
+                 ((rere-file-diff-p val)
+                  (cl-remove-if-not
+                   #'rere--pending-p
+                   (cl-mapcan
+                    (lambda (h)
+                      (copy-sequence (rere-hunk-lines h)))
+                    (rere-file-diff-hunks val))))
+                 ((rere-hunk-p val)
+                  (cl-remove-if-not
+                   #'rere--pending-p
+                   (copy-sequence (rere-hunk-lines val))))
+                 ((rere-diff-line-p val)
+                  (when (rere--pending-p val)
+                    (list val)))
+                 (t nil))))))
+    (unless to-accept
+      (user-error "[rere] No pending changes to accept"))
+    (let ((target-hash
+           (rere--find-next-target to-accept all-pending)))
+      (dolist (dl to-accept)
+        (rere--accept-line dl))
+      (rere--render-buffer target-hash))))
 
 (defun rere-unaccept ()
-  "Undo acceptance of line, hunk, or file at point.
-Move it back from Reviewed to Pending."
+  "Undo acceptance of region, line, hunk, or file at point.
+Move items back from Reviewed to Pending."
   (interactive)
-  (let ((section (magit-current-section)))
-    (unless section
-      (user-error "[rere] No section at point"))
-    (let ((val (oref section value)))
-      (cond
-       ((rere-diff-line-p val)
-        (rere--unaccept-line val))
-       ((rere-hunk-p val)
-        (dolist (dl (rere-hunk-lines val))
-          (rere--unaccept-line dl)))
-       ((rere-file-diff-p val)
-        (dolist (hunk (rere-file-diff-hunks val))
-          (dolist (dl (rere-hunk-lines hunk))
-            (rere--unaccept-line dl))))
-       (t
-        (user-error
-         "[rere] Not on a reviewable element"))))
-    (rere--render-buffer)))
+  (let* ((in-visual (and (bound-and-true-p evil-mode)
+                         (evil-visual-state-p)))
+         (has-region (or in-visual (use-region-p)))
+         (to-unaccept nil)
+         (all-reviewed (rere--reviewed-diff-lines)))
+    (if has-region
+        (progn
+          (setq to-unaccept
+                (cl-remove-if-not
+                 #'rere--reviewed-p
+                 (rere--region-elements
+                  (region-beginning) (region-end))))
+          (when in-visual
+            (evil-normal-state))
+          (deactivate-mark))
+      (when-let* ((section (magit-current-section)))
+        (let ((val (oref section value)))
+          (setq to-unaccept
+                (cond
+                 ((rere-diff-line-p val)
+                  (when (rere--reviewed-p val)
+                    (list val)))
+                 ((rere-hunk-p val)
+                  (cl-remove-if-not
+                   #'rere--reviewed-p
+                   (copy-sequence (rere-hunk-lines val))))
+                 ((rere-file-diff-p val)
+                  (cl-remove-if-not
+                   #'rere--reviewed-p
+                   (cl-mapcan
+                    (lambda (h)
+                      (copy-sequence (rere-hunk-lines h)))
+                    (rere-file-diff-hunks val))))
+                 (t nil))))))
+    (unless to-unaccept
+      (user-error "[rere] No reviewed changes to unaccept"))
+    (let ((target-hash
+           (rere--find-next-target to-unaccept all-reviewed)))
+      (dolist (dl to-unaccept)
+        (rere--unaccept-line dl))
+      (rere--render-buffer target-hash))))
 
-(defun rere--advance-to-next-pending ()
-  "Move cursor to the next pending diff line."
-  (let ((found nil))
-    (save-excursion
-      (while (and (not found) (not (eobp)))
-        (forward-line 1)
-        (when-let* ((section
-                     (magit-current-section)))
-          (let ((val (oref section value)))
-            (when (and (rere-diff-line-p val)
-                       (rere--pending-p val))
-              (setq found (point)))))))
-    (when found
-      (goto-char found))))
+(defun rere-toggle-section ()
+  "Toggle section visibility.
+If on Pending or Reviewed header, toggle that category.
+If inside a file (heading, hunk, or diff line), toggle that file."
+  (interactive)
+  (let ((sec (magit-current-section)))
+    (unless sec
+      (user-error "[rere] No section at point"))
+    (let ((target-sec
+           (cond
+            ((memq (oref sec type) '(rere-pending rere-reviewed))
+             sec)
+            (t
+             (let ((file-sec sec))
+               (while (and file-sec
+                           (not (eq (oref file-sec type)
+                                    'rere-file-section)))
+                 (setq file-sec (oref file-sec parent)))
+               (or file-sec sec))))))
+      (magit-section-toggle target-sec)
+      (when (and (oref target-sec hidden)
+                 (oref target-sec content)
+                 (> (point) (oref target-sec content)))
+        (goto-char (oref target-sec start))))))
 
 (defun rere-open-file ()
-  "Open the source file at the diff line at point.
-Uses `find-file' in another tab if available."
+  "Open the source file at the diff line at point."
   (interactive)
   (let ((dl (rere--section-diff-line)))
     (unless dl
@@ -663,11 +827,7 @@ Uses `find-file' in another tab if available."
       (unless (file-exists-p full-path)
         (user-error
          "[rere] File not found: %s" full-path))
-      (if (fboundp 'tab-bar-new-tab)
-          (progn
-            (tab-bar-new-tab)
-            (find-file full-path))
-        (find-file-other-window full-path))
+      (find-file full-path)
       (goto-char (point-min))
       (forward-line (1- line-num)))))
 
@@ -723,6 +883,8 @@ Pending."
     (define-key map (kbd "u") #'rere-unaccept)
     (define-key map (kbd "RET") #'rere-open-file)
     (define-key map (kbd "r") #'rere-refresh)
+    (define-key map (kbd "TAB") #'rere-toggle-section)
+    (define-key map (kbd "<tab>") #'rere-toggle-section)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
@@ -731,7 +893,7 @@ Pending."
 
 (defun rere--setup-evil ()
   "Set up Evil keybindings for `rere-mode'.
-Bind review keys in normal state so Evil does not
+Bind review keys in normal and visual states so Evil does not
 shadow them."
   (when (bound-and-true-p evil-mode)
     (evil-set-initial-state 'rere-mode 'normal)
@@ -742,11 +904,16 @@ shadow them."
       (kbd "r") #'rere-refresh
       (kbd "q") #'rere-quit
       (kbd "RET") #'rere-open-file
-      (kbd "TAB") #'magit-section-toggle
+      (kbd "TAB") #'rere-toggle-section
+      (kbd "<tab>") #'rere-toggle-section
       (kbd "j") #'next-line
       (kbd "k") #'previous-line
       (kbd "g g") #'beginning-of-buffer
-      (kbd "G") #'end-of-buffer)))
+      (kbd "G") #'end-of-buffer)
+    (evil-define-key 'visual rere-mode-map
+      (kbd "s") #'rere-smart-accept
+      (kbd "S") #'rere-smart-accept
+      (kbd "u") #'rere-unaccept)))
 
 (with-eval-after-load 'evil
   (rere--setup-evil))
@@ -760,7 +927,9 @@ shadow them."
 (define-derived-mode rere-mode magit-section-mode
   "Rere"
   "Major mode for rebase review.
-\\{rere-mode-map}")
+\\{rere-mode-map}"
+  (setq-local revert-buffer-function
+              (lambda (&rest _) (rere-refresh))))
 
 ;;;; Entry point
 
@@ -772,22 +941,25 @@ Only works during an interactive git rebase."
   (unless (rere--rebase-in-progress-p)
     (user-error
      "[rere] Not currently in an interactive rebase"))
-  (let ((repo-dir default-directory)
-        (config (current-window-configuration))
-        (buf (get-buffer-create rere-buffer-name)))
+  (let* ((repo-dir default-directory)
+         (config (current-window-configuration))
+         (buf (get-buffer-create rere-buffer-name)))
     (switch-to-buffer buf)
     (delete-other-windows)
     (setq default-directory repo-dir)
     (unless (eq major-mode 'rere-mode)
       (rere-mode))
     (setq rere--saved-window-config config)
-    (setq rere--commit-info
-          (rere--read-commit-info))
+    (let* ((new-info (rere--read-commit-info))
+           (old-sha (plist-get rere--commit-info :sha))
+           (new-sha (plist-get new-info :sha)))
+      (when (or (null rere--reviewed)
+                (not (equal old-sha new-sha)))
+        (setq rere--reviewed
+              (make-hash-table :test 'equal)))
+      (setq rere--commit-info new-info))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
-    (unless rere--reviewed
-      (setq rere--reviewed
-            (make-hash-table :test 'equal)))
     (rere--render-buffer)
     (goto-char (point-min))))
 
