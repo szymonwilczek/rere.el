@@ -443,5 +443,23 @@ index 0000000..1111111 100644
             (should (file-exists-p cur-file))))
       (delete-directory tmp-dir t))))
 
+(ert-deftest rere-test-reviewed-section-hidden-overlay ()
+  "Reviewed section is hidden with invisible overlay by default."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (let* ((hunk (car (rere-file-diff-hunks (car rere--diff-files))))
+           (dl (car (rere-hunk-lines hunk))))
+      (puthash (rere-diff-line-hash dl) t rere--reviewed))
+    (rere--render-buffer)
+    (let ((rev-sec (cl-find 'rere-reviewed
+                            (oref magit-root-section children)
+                            :key (lambda (s) (oref s type)))))
+      (should (oref rev-sec hidden))
+      (should (get-char-property (oref rev-sec content)
+                                 'invisible)))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here

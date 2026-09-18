@@ -494,6 +494,7 @@ Otherwise, try to preserve cursor position."
       (rere--insert-pending-section)
       (rere--insert-reviewed-section)
       (rere--insert-footer))
+    (magit-section-show magit-root-section)
     ;; restore position
     (or (and saved-line-hash
              (rere--goto-line-hash saved-line-hash))
