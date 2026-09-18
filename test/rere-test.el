@@ -345,5 +345,67 @@ index 0000000..1111111 100644
          "/home/wolfie/Dokumenty/GitHub/rere.el/"))
     (should-not (rere--rebase-in-progress-p))))
 
+;;;; Target finding tests
+
+(ert-deftest rere-test-find-next-target-middle ()
+  "Target finder picks next line when removing a middle line."
+  (let* ((files (rere--parse-diff rere-test--sample-diff))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (cl-remove-if-not #'rere--reviewable-p
+                                  (rere-hunk-lines hunk)))
+         (target (rere--find-next-target (list (nth 0 lines))
+                                         lines)))
+    (should (equal target
+                   (rere-diff-line-hash (nth 1 lines))))))
+
+(ert-deftest rere-test-find-next-target-block ()
+  "Target finder picks line after block for visual accept."
+  (let* ((files (rere--parse-diff rere-test--sample-diff))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (cl-remove-if-not #'rere--reviewable-p
+                                  (rere-hunk-lines hunk)))
+         (target (rere--find-next-target (list (nth 0 lines)
+                                               (nth 1 lines))
+                                         lines)))
+    (should (equal target
+                   (rere-diff-line-hash (nth 2 lines))))))
+
+(ert-deftest rere-test-find-next-target-last ()
+  "Target finder picks previous line when removing last line."
+  (let* ((files (rere--parse-diff rere-test--sample-diff))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (cl-remove-if-not #'rere--reviewable-p
+                                  (rere-hunk-lines hunk)))
+         (target (rere--find-next-target (list (nth 2 lines))
+                                         lines)))
+    (should (equal target
+                   (rere-diff-line-hash (nth 1 lines))))))
+
+(ert-deftest rere-test-find-next-target-all ()
+  "Target finder returns nil when removing all lines."
+  (let* ((files (rere--parse-diff rere-test--sample-diff))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (cl-remove-if-not #'rere--reviewable-p
+                                  (rere-hunk-lines hunk)))
+         (target (rere--find-next-target lines lines)))
+    (should (null target))))
+
+;;;; Toggle section tests
+
+(ert-deftest rere-test-toggle-file-from-line ()
+  "Toggling section from a diff line collapses enclosing file."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed
+          (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "+  (message \"new\")")
+    (rere-toggle-section)
+    (let ((sec (magit-current-section)))
+      (should (oref sec hidden)))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
