@@ -899,19 +899,8 @@ If on a file header or diff line, toggle that file."
           (forward-line 1))))
     (if found
         (goto-char found)
-      (let ((sec-pos nil))
-        (save-excursion
-          (forward-line 1)
-          (while (and (not sec-pos) (not (eobp)))
-            (unless (invisible-p (point))
-              (when-let* ((section (magit-current-section)))
-                (when (memq (oref section type)
-                            '(rere-pending rere-reviewed))
-                  (setq sec-pos (oref section start)))))
-            (forward-line 1)))
-        (if sec-pos
-            (goto-char sec-pos)
-          (goto-char orig))))))
+      (message "[rere] No further reviewable diff lines below")
+      (goto-char orig))))
 
 (defun rere-previous-diff-line ()
   "Move point to previous reviewable diff line, skipping context."
@@ -931,18 +920,8 @@ If on a file header or diff line, toggle that file."
           (forward-line -1))))
     (if found
         (goto-char found)
-      (let ((sec-pos nil))
-        (save-excursion
-          (forward-line -1)
-          (while (and (not sec-pos) (not (bobp)))
-            (unless (invisible-p (point))
-              (when-let* ((section (magit-current-section)))
-                (when (eq (oref section type) 'rere-pending)
-                  (setq sec-pos (oref section start)))))
-            (forward-line -1)))
-        (if sec-pos
-            (goto-char sec-pos)
-          (goto-char orig))))))
+      (message "[rere] No previous reviewable diff lines above")
+      (goto-char orig))))
 
 (defun rere-open-file ()
   "Open the source file at the diff line at point."
@@ -1025,8 +1004,6 @@ Pending."
     (define-key map (kbd "<tab>") #'rere-toggle-section)
     (define-key map (kbd "n") #'rere-next-diff-line)
     (define-key map (kbd "p") #'rere-previous-diff-line)
-    (define-key map (kbd "j") #'rere-next-diff-line)
-    (define-key map (kbd "k") #'rere-previous-diff-line)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
@@ -1048,8 +1025,6 @@ shadow them."
       (kbd "RET") #'rere-open-file
       (kbd "TAB") #'rere-toggle-section
       (kbd "<tab>") #'rere-toggle-section
-      (kbd "j") #'rere-next-diff-line
-      (kbd "k") #'rere-previous-diff-line
       (kbd "n") #'rere-next-diff-line
       (kbd "p") #'rere-previous-diff-line
       (kbd "g g") #'beginning-of-buffer

@@ -540,7 +540,17 @@ index 0000000..1111111 100644
     (let ((val5 (oref (magit-current-section) value)))
       (should (eq (rere-diff-line-type val5) 'added))
       (should (equal (rere-diff-line-content val5)
-                     "  (message \"added\")")))))
+                     "  (message \"added\")")))
+    ;; next diff line at boundary stays in place
+    (rere-next-diff-line)
+    (let ((pos (point)))
+      (rere-next-diff-line)
+      (should (= (point) pos)))
+    ;; previous diff line at start boundary stays in place
+    (rere--goto-first-pending)
+    (let ((pos (point)))
+      (rere-previous-diff-line)
+      (should (= (point) pos)))))
 
 (provide 'rere-test)
 ;;; rere-test.el ends here
