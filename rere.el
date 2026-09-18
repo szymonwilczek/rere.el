@@ -566,8 +566,7 @@ Return t if found."
 
 (defun rere--insert-reviewed-section ()
   "Insert the Reviewed changes section."
-  (magit-insert-section (rere-reviewed nil
-                                       (zerop rere--reviewed-count))
+  (magit-insert-section (rere-reviewed nil t)
     (magit-insert-heading
       (format "Reviewed changes (%d)\n"
               rere--reviewed-count))
@@ -582,7 +581,7 @@ Return t if found."
            (rere--collect-file-lines file pred)))
       (when file-lines
         (magit-insert-section
-            (rere-file-section file t)
+            (rere-file-section file nil)
           (magit-insert-heading
             (propertize
              (format "  modified   %s\n"
@@ -593,7 +592,7 @@ Return t if found."
             (let ((hunk (car hunk-data))
                   (lines (cdr hunk-data)))
               (magit-insert-section
-                  (rere-hunk-section hunk t)
+                  (rere-hunk-section hunk nil)
                 (magit-insert-heading
                   (propertize
                    (concat "  "
@@ -786,7 +785,8 @@ Move items back from Reviewed to Pending."
 (defun rere-toggle-section ()
   "Toggle section visibility.
 If on Pending or Reviewed header, toggle that category.
-If inside a file (heading, hunk, or diff line), toggle that file."
+If on a hunk header, toggle that hunk.
+If on a file header or diff line, toggle that file."
   (interactive)
   (let ((sec (magit-current-section)))
     (unless sec
@@ -794,6 +794,8 @@ If inside a file (heading, hunk, or diff line), toggle that file."
     (let ((target-sec
            (cond
             ((memq (oref sec type) '(rere-pending rere-reviewed))
+             sec)
+            ((eq (oref sec type) 'rere-hunk-section)
              sec)
             (t
              (let ((file-sec sec))
