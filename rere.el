@@ -73,6 +73,11 @@
   :type 'string
   :group 'rere)
 
+(defcustom rere-refine-highlight t
+  "Whether to highlight word-level differences in diff lines."
+  :type 'boolean
+  :group 'rere)
+
 ;;;; Data structures
 
 (cl-defstruct rere-diff-line
@@ -84,7 +89,8 @@
   hunk-header ; hunk header string
   old-line    ; line number in old file (or nil)
   new-line    ; line number in new file (or nil)
-  hash)       ; content hash for persistence
+  hash        ; content hash for persistence
+  highlights) ; list of (beg . end) word highlight offsets
 
 (cl-defstruct rere-hunk
   "A diff hunk containing lines."
@@ -246,36 +252,36 @@ Return structured representation of the diff."
        ;; new file diff header
        ((string-match
          "^diff --git a/\\(.+\\) b/\\(.+\\)" line)
-        ;; save previous hunk/file
-        (when current-hunk
+        (let ((new-filename (match-string 2 line)))
+          ;; save previous hunk/file
+          (when current-hunk
+            (when current-file
+              (push (rere--finalize-hunk current-hunk)
+                    (rere-file-diff-hunks current-file))))
           (when current-file
-            (push (rere--finalize-hunk current-hunk)
-                  (rere-file-diff-hunks current-file))))
-        (when current-file
-          (setf (rere-file-diff-hunks current-file)
-                (nreverse
-                 (rere-file-diff-hunks current-file)))
-          (push current-file files))
-        (setq current-filename
-              (match-string 2 line))
-        (setq current-file
-              (make-rere-file-diff
-               :filename current-filename
-               :hunks '()
-               :header line))
-        (setq current-hunk nil))
+            (setf (rere-file-diff-hunks current-file)
+                  (nreverse
+                   (rere-file-diff-hunks current-file)))
+            (push current-file files))
+          (setq current-filename new-filename)
+          (setq current-file
+                (make-rere-file-diff
+                 :filename current-filename
+                 :hunks '()
+                 :header line))
+          (setq current-hunk nil)))
 
        ;; Hunk header
        ((string-match
          "^@@[ \t]+\\(-[0-9]+\\(?:,[0-9]+\\)?\\)[ \t]+\
 \\(\\+[0-9]+\\(?:,[0-9]+\\)?\\)[ \t]+@@\\(.*\\)"
          line)
-        ;; save previous hunk
-        (when (and current-hunk current-file)
-          (push (rere--finalize-hunk current-hunk)
-                (rere-file-diff-hunks current-file)))
         (let* ((old-spec (match-string 1 line))
                (new-spec (match-string 2 line)))
+          ;; save previous hunk
+          (when (and current-hunk current-file)
+            (push (rere--finalize-hunk current-hunk)
+                  (rere-file-diff-hunks current-file)))
           (setq old-line
                 (abs (string-to-number old-spec)))
           (setq new-line
@@ -329,10 +335,138 @@ Return structured representation of the diff."
       (push current-file files))
     (nreverse files)))
 
+(defun rere--added-highlight-face ()
+  "Return face for added word highlights."
+  (cond
+   ((facep 'magit-diff-added-highlight) 'magit-diff-added-highlight)
+   ((facep 'diff-refine-added) 'diff-refine-added)
+   (t 'highlight)))
+
+(defun rere--removed-highlight-face ()
+  "Return face for removed word highlights."
+  (cond
+   ((facep 'magit-diff-removed-highlight) 'magit-diff-removed-highlight)
+   ((facep 'diff-refine-removed) 'diff-refine-removed)
+   (t 'highlight)))
+
+(defun rere--tokenize-line (str)
+  "Tokenize STR into a vector of [token-str beg end]."
+  (let ((pos 0)
+        (len (length str))
+        (tokens nil))
+    (while (< pos len)
+      (let ((end (cond
+                  ((string-match
+                    "\\`[a-zA-Z0-9_]+" (substring str pos))
+                   (+ pos (match-end 0)))
+                  ((string-match
+                    "\\`[ \t]+" (substring str pos))
+                   (+ pos (match-end 0)))
+                  (t (1+ pos)))))
+        (push (vector (substring str pos end) pos end)
+              tokens)
+        (setq pos end)))
+    (vconcat (nreverse tokens))))
+
+(defun rere--merge-ranges (ranges)
+  "Merge contiguous or overlapping character RANGES."
+  (when ranges
+    (let ((cur (car ranges))
+          (res nil))
+      (dolist (r (cdr ranges))
+        (if (= (cdr cur) (car r))
+            (setq cur (cons (car cur) (cdr r)))
+          (push cur res)
+          (setq cur r)))
+      (push cur res)
+      (nreverse res))))
+
+(defun rere--diff-word-ranges (s1 s2)
+  "Compute word differences between S1 and S2.
+Return cons (RANGES1 . RANGES2) where each is a list of (beg . end)."
+  (if (or (> (length s1) 1000) (> (length s2) 1000))
+      (cons nil nil)
+    (let* ((v1 (rere--tokenize-line s1))
+           (v2 (rere--tokenize-line s2))
+           (n (length v1))
+           (m (length v2))
+           (w (1+ m))
+           (dp (make-vector (* (1+ n) w) 0)))
+      (dotimes (i n)
+        (let ((tok1 (aref (aref v1 i) 0))
+              (row-curr (* (1+ i) w))
+              (row-prev (* i w)))
+          (dotimes (j m)
+            (let ((tok2 (aref (aref v2 j) 0)))
+              (aset dp (+ row-curr (1+ j))
+                    (if (equal tok1 tok2)
+                        (1+ (aref dp (+ row-prev j)))
+                      (max (aref dp (+ row-curr j))
+                           (aref dp (+ row-prev (1+ j))))))))))
+      (let ((i n) (j m)
+            (diff1 nil)
+            (diff2 nil))
+        (while (or (> i 0) (> j 0))
+          (cond
+           ((and (> i 0) (> j 0)
+                 (equal (aref (aref v1 (1- i)) 0)
+                        (aref (aref v2 (1- j)) 0)))
+            (cl-decf i)
+            (cl-decf j))
+           ((and (> j 0)
+                 (or (zerop i)
+                     (>= (aref dp (+ (* i w) (1- j)))
+                         (aref dp (+ (* (1- i) w) j)))))
+            (let ((tok (aref v2 (1- j))))
+              (push (cons (aref tok 1) (aref tok 2)) diff2))
+            (cl-decf j))
+           ((> i 0)
+            (let ((tok (aref v1 (1- i))))
+              (push (cons (aref tok 1) (aref tok 2)) diff1))
+            (cl-decf i))))
+        (cons (rere--merge-ranges diff1)
+              (rere--merge-ranges diff2))))))
+
+(defun rere--refine-hunk (hunk)
+  "Compute word-level diff refinement for paired lines in HUNK."
+  (save-match-data
+    (let ((rem-block nil)
+          (add-block nil))
+      (cl-labels ((flush ()
+                    (when (and rem-block add-block)
+                      (let ((rems (nreverse rem-block))
+                            (adds (nreverse add-block)))
+                        (dotimes (i (min (length rems) (length adds)))
+                          (let* ((r-line (nth i rems))
+                                 (a-line (nth i adds))
+                                 (ranges
+                                  (rere--diff-word-ranges
+                                   (rere-diff-line-content r-line)
+                                   (rere-diff-line-content a-line))))
+                            (setf (rere-diff-line-highlights r-line)
+                                  (car ranges))
+                            (setf (rere-diff-line-highlights a-line)
+                                  (cdr ranges))))))
+                    (setq rem-block nil
+                          add-block nil)))
+        (dolist (line (rere-hunk-lines hunk))
+          (pcase (rere-diff-line-type line)
+            ('removed
+             (when add-block (flush))
+             (push line rem-block))
+            ('added
+             (if rem-block
+                 (push line add-block)
+               nil))
+            (_ (flush))))
+        (flush)))))
+
 (defun rere--finalize-hunk (hunk)
-  "Finalize HUNK by reversing its lines list."
+  "Finalize HUNK by reversing lines and computing refinement."
   (setf (rere-hunk-lines hunk)
         (nreverse (rere-hunk-lines hunk)))
+  (when rere-refine-highlight
+    (rere--refine-hunk hunk))
   hunk)
 
 ;;;; Line classification helpers
@@ -686,23 +820,38 @@ Return alist of (hunk . lines-to-render)."
     (nreverse result)))
 
 (defun rere--insert-single-line (dl)
-  "Insert a single diff line DL with proper face."
+  "Insert a single diff line DL with proper face and word refinement."
   (let* ((type (rere-diff-line-type dl))
          (face (pcase type
                  ('added 'magit-diff-added)
                  ('removed 'magit-diff-removed)
                  ('context 'magit-diff-context)
                  (_ 'default)))
+         (hl-face (when rere-refine-highlight
+                    (pcase type
+                      ('added (rere--added-highlight-face))
+                      ('removed (rere--removed-highlight-face)))))
          (prefix (pcase type
                    ('added "+")
                    ('removed "-")
                    (_ " ")))
-         (text (format "  %s%s\n"
-                       prefix
-                       (rere-diff-line-content dl))))
-    (magit-insert-section (rere-line dl)
-      (insert (propertize text
-                          'font-lock-face face)))))
+         (content (copy-sequence (rere-diff-line-content dl)))
+         (highlights (when rere-refine-highlight
+                       (rere-diff-line-highlights dl))))
+    (put-text-property 0 (length content)
+                       'font-lock-face face content)
+    (when (and hl-face highlights)
+      (dolist (hl highlights)
+        (put-text-property (car hl) (cdr hl)
+                           'font-lock-face hl-face
+                           content)))
+    (let ((text (concat
+                 (propertize (format "  %s" prefix)
+                             'font-lock-face face)
+                 content
+                 (propertize "\n" 'font-lock-face face))))
+      (magit-insert-section (rere-line dl)
+        (insert text)))))
 
 (defun rere--insert-footer ()
   "Insert footer with keybinding hints."

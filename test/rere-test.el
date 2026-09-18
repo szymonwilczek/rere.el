@@ -613,5 +613,76 @@ index 0000000..1111111 100644
       (should (equal (rere-file-diff-filename (oref sec value))
                      "foo.el")))))
 
+;;;; Word refinement tests
+
+(ert-deftest rere-test-diff-word-ranges ()
+  "Word difference computes accurate token ranges."
+  (let* ((s1 "  (defun foo (x y))")
+         (s2 "  (defun foo (x y z))")
+         (ranges (rere--diff-word-ranges s1 s2)))
+    ;; s1 has no highlights, s2 highlights " z"
+    (should (null (car ranges)))
+    (should (equal (cdr ranges) '((17 . 19))))
+    (should (equal (substring s2 17 19) " z")))
+  (let* ((s1 "const x = calculate_sum(a, b);")
+         (s2 "const x = compute_total(a, b);")
+         (ranges (rere--diff-word-ranges s1 s2)))
+    (should (equal (car ranges) '((10 . 23))))
+    (should (equal (cdr ranges) '((10 . 23))))
+    (should (equal (substring s1 10 23) "calculate_sum"))
+    (should (equal (substring s2 10 23) "compute_total"))))
+
+(ert-deftest rere-test-refine-hunk-highlights ()
+  "Parsing diff assigns word highlight ranges to paired lines."
+  (let* ((raw (concat "diff --git a/test.el b/test.el\n"
+                      "--- a/test.el\n"
+                      "+++ b/test.el\n"
+                      "@@ -1,2 +1,2 @@\n"
+                      "-(defun foo (old-arg))\n"
+                      "+(defun foo (new-arg))\n"
+                      " (context-line)\n"))
+         (files (rere--parse-diff raw))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (rere-hunk-lines hunk))
+         (r-line (nth 0 lines))
+         (a-line (nth 1 lines)))
+    (should (equal (rere-diff-line-highlights r-line)
+                   '((12 . 15))))
+    (should (equal (rere-diff-line-highlights a-line)
+                   '((12 . 15))))
+    (should (equal (substring (rere-diff-line-content r-line) 12 15)
+                   "old"))
+    (should (equal (substring (rere-diff-line-content a-line) 12 15)
+                   "new"))))
+
+(ert-deftest rere-test-render-with-word-refinement ()
+  "Rendering single line applies highlight faces to refined tokens."
+  (let* ((raw (concat "diff --git a/test.el b/test.el\n"
+                      "--- a/test.el\n"
+                      "+++ b/test.el\n"
+                      "@@ -1,2 +1,2 @@\n"
+                      "-(defun foo (old-arg))\n"
+                      "+(defun foo (new-arg))\n"
+                      " (context-line)\n"))
+         (files (rere--parse-diff raw))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (rere-hunk-lines hunk))
+         (a-line (nth 1 lines)))
+    (with-temp-buffer
+      (rere-mode)
+      (let ((inhibit-read-only t))
+        (rere--insert-single-line a-line))
+      ;; buffer content:
+      ;; "  +(defun foo (new-arg))\n"
+      ;; prefix "  +" has base face
+      (should (eq (get-text-property 1 'font-lock-face)
+                  'magit-diff-added))
+      ;; content start: "(defun foo (" at pos 4
+      (should (eq (get-text-property 4 'font-lock-face)
+                  'magit-diff-added))
+      ;; highlighted "new" starting at pos 4 + 12 = 16
+      (should (eq (get-text-property 16 'font-lock-face)
+                  (rere--added-highlight-face))))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
