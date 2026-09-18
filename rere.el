@@ -40,6 +40,7 @@
 ;;   s / S - smart accept (category/file/hunk/line)
 ;;   u     - undo accept (move back to Pending)
 ;;   n / p - jump to next/previous diff line
+;;   ] / [ - jump to next/previous file
 ;;   RET   - open source file at diff line
 ;;   TAB   - toggle section visibility
 ;;   r     - refresh diff
@@ -714,7 +715,7 @@ Return alist of (hunk . lines-to-render)."
    (propertize
     (concat "\n"
             "s accept  u undo  "
-            "n/p diff-line  TAB toggle  "
+            "n/p diff  [/] file  TAB toggle  "
             "RET edit  r refresh  q quit\n")
     'font-lock-face 'magit-dimmed)))
 
@@ -928,6 +929,54 @@ If on a file header or diff line, toggle that file."
       (message "[rere] No previous reviewable diff lines above")
       (goto-char orig))))
 
+(defun rere-next-file ()
+  "Move point to next file heading."
+  (interactive)
+  (let ((found nil)
+        (orig (point))
+        (cur-end (line-end-position)))
+    (save-excursion
+      (forward-line 1)
+      (while (and (not found) (not (eobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((s section))
+              (while (and s (not (eq (oref s type)
+                                     'rere-file-section)))
+                (setq s (oref s parent)))
+              (when (and s (> (oref s start) cur-end))
+                (setq found (oref s start))))))
+        (unless found
+          (forward-line 1))))
+    (if found
+        (goto-char found)
+      (message "[rere] No further files below")
+      (goto-char orig))))
+
+(defun rere-previous-file ()
+  "Move point to previous file heading."
+  (interactive)
+  (let ((found nil)
+        (orig (point))
+        (cur-beg (line-beginning-position)))
+    (save-excursion
+      (forward-line -1)
+      (while (and (not found) (not (bobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((s section))
+              (while (and s (not (eq (oref s type)
+                                     'rere-file-section)))
+                (setq s (oref s parent)))
+              (when (and s (< (oref s start) cur-beg))
+                (setq found (oref s start))))))
+        (unless found
+          (forward-line -1))))
+    (if found
+        (goto-char found)
+      (message "[rere] No previous files above")
+      (goto-char orig))))
+
 (defun rere-open-file ()
   "Open the source file at the diff line at point."
   (interactive)
@@ -1009,6 +1058,8 @@ Pending."
     (define-key map (kbd "<tab>") #'rere-toggle-section)
     (define-key map (kbd "n") #'rere-next-diff-line)
     (define-key map (kbd "p") #'rere-previous-diff-line)
+    (define-key map (kbd "]") #'rere-next-file)
+    (define-key map (kbd "[") #'rere-previous-file)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
@@ -1032,6 +1083,8 @@ shadow them."
       (kbd "<tab>") #'rere-toggle-section
       (kbd "n") #'rere-next-diff-line
       (kbd "p") #'rere-previous-diff-line
+      (kbd "]") #'rere-next-file
+      (kbd "[") #'rere-previous-file
       (kbd "g g") #'beginning-of-buffer
       (kbd "G") #'end-of-buffer)
     (evil-define-key 'visual rere-mode-map

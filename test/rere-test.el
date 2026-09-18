@@ -583,5 +583,35 @@ index 0000000..1111111 100644
       (rere-previous-diff-line)
       (should (= (point) pos)))))
 
+(ert-deftest rere-test-next-and-previous-file ()
+  "File navigation with [ and ] jumps between file sections."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "foo.el")
+    ;; on foo.el -> jump to next file bar.el
+    (rere-next-file)
+    (let ((sec (magit-current-section)))
+      (should (eq (oref sec type) 'rere-file-section))
+      (should (equal (rere-file-diff-filename (oref sec value))
+                     "bar.el")))
+    ;; from diff line in bar.el -> [ jumps to bar.el header
+    (search-forward "removed-call")
+    (rere-previous-file)
+    (let ((sec (magit-current-section)))
+      (should (eq (oref sec type) 'rere-file-section))
+      (should (equal (rere-file-diff-filename (oref sec value))
+                     "bar.el")))
+    ;; from bar.el header -> [ jumps to foo.el header
+    (rere-previous-file)
+    (let ((sec (magit-current-section)))
+      (should (eq (oref sec type) 'rere-file-section))
+      (should (equal (rere-file-diff-filename (oref sec value))
+                     "foo.el")))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
