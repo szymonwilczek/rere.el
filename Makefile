@@ -4,9 +4,11 @@ BATCH  = $(EMACS) -Q --batch
 SRCS   = rere.el
 TESTS  = test/rere-test.el
 ELCS   = $(SRCS:.el=.elc)
-ELPA_DIR ?= $(HOME)/.config/emacs/elpa
-ELPA_DIRS = $(wildcard $(ELPA_DIR)/*)
-DEP_FLAGS = $(patsubst %,-L %,$(ELPA_DIRS))
+ELPA_DIR  ?= $(HOME)/.config/emacs/elpa
+ELPA_DIRS  = $(wildcard $(ELPA_DIR)/*) \
+             $(wildcard $(HOME)/.emacs.d/elpa/*) \
+             $(wildcard $(HOME)/.config/emacs/elpa/*)
+DEP_FLAGS  = $(patsubst %,-L %,$(sort $(ELPA_DIRS)))
 
 LOAD_PATH = -L . $(DEP_FLAGS)
 
