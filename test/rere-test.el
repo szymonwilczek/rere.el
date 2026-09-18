@@ -592,7 +592,7 @@ index 0000000..1111111 100644
     (setq rere--reviewed (make-hash-table :test 'equal))
     (rere--render-buffer)
     (goto-char (point-min))
-    (search-forward "foo.el")
+    (search-forward "modified   foo.el")
     ;; on foo.el -> jump to next file bar.el
     (rere-next-file)
     (let ((sec (magit-current-section)))
@@ -683,6 +683,45 @@ index 0000000..1111111 100644
       ;; highlighted "new" starting at pos 4 + 12 = 16
       (should (eq (get-text-property 16 'font-lock-face)
                   (rere--added-highlight-face))))))
+
+;;;; Diffstat tests
+
+(ert-deftest rere-test-diffstat-graph ()
+  "Diffstat graph generates proper +/- bars with faces."
+  (let ((g (rere--diffstat-graph 3 1 10)))
+    (should (equal (substring-no-properties g) "+++-"))
+    (should (eq (get-text-property 0 'font-lock-face g)
+                'magit-diff-added))
+    (should (eq (get-text-property 3 'font-lock-face g)
+                'magit-diff-removed))))
+
+(ert-deftest rere-test-diffstat-section-rendered ()
+  "Buffer rendering includes Files changed section."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (should (search-forward "Files changed (2)" nil t))
+    (should (search-forward "foo.el" nil t))
+    (should (search-forward "bar.el" nil t))))
+
+(ert-deftest rere-test-diffstat-smart-accept-file ()
+  "Pressing s on a diffstat file line accepts all lines of that file."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "foo.el")
+    (rere-smart-accept)
+    ;; foo.el has 3 reviewable lines (1 removed, 2 added)
+    ;; total 3 lines accepted
+    (should (= (hash-table-count rere--reviewed) 3))))
 
 (provide 'rere-test)
 ;;; rere-test.el ends here

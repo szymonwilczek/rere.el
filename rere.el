@@ -78,6 +78,11 @@
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-show-diffstat t
+  "Whether to display the file diffstat summary section."
+  :type 'boolean
+  :group 'rere)
+
 ;;;; Data structures
 
 (cl-defstruct rere-diff-line
@@ -626,6 +631,7 @@ Otherwise, try to preserve cursor position."
     (rere--count-lines)
     (magit-insert-section (magit-root-section)
       (rere--insert-header)
+      (rere--insert-diffstat-section)
       (rere--insert-pending-section)
       (rere--insert-reviewed-section)
       (rere--insert-footer))
@@ -744,6 +750,87 @@ Return t if found."
                 rere--reviewed-count
                 rere--total-lines pct)
         'font-lock-face 'magit-section-heading))
+      (insert "\n"))))
+
+(defun rere--diffstat-graph (added removed max-width)
+  "Return propertized diffstat graph string for ADDED and REMOVED lines.
+MAX-WIDTH is the maximum length of the +/- bar."
+  (let* ((total (+ added removed))
+         (width (if (<= total max-width)
+                    total
+                  max-width))
+         (add-bar (if (zerop total) 0
+                    (round (* (/ (float added) total) width))))
+         (rem-bar (if (zerop total) 0
+                    (- width add-bar))))
+    (concat
+     (propertize (make-string add-bar ?+)
+                 'font-lock-face 'magit-diff-added)
+     (propertize (make-string rem-bar ?-)
+                 'font-lock-face 'magit-diff-removed))))
+
+(defun rere--format-file-diffstat (filename added removed reviewed total
+                                            max-len)
+  "Format a single file diffstat line for FILENAME.
+ADDED, REMOVED, REVIEWED, and TOTAL are line counts.
+MAX-LEN is the maximum filename display width."
+  (let* ((disp-fn (if (> (length filename) 35)
+                      (concat "..." (substring filename
+                                               (- (length filename) 32)))
+                    filename))
+         (padding (make-string (max 0 (- max-len (length disp-fn))) ?\s))
+         (tot-diff (+ added removed))
+         (graph (rere--diffstat-graph added removed 15))
+         (rev-part (if (= reviewed total)
+                       (propertize (format "  [%d/%d]" reviewed total)
+                                   'font-lock-face 'magit-diff-added)
+                     (propertize (format "  [%d/%d]" reviewed total)
+                                 'font-lock-face 'magit-dimmed))))
+    (concat (propertize (concat "  " disp-fn)
+                        'font-lock-face 'magit-diff-file-heading)
+            padding
+            (propertize " | " 'font-lock-face 'magit-dimmed)
+            (propertize (format "%2d " tot-diff)
+                        'font-lock-face 'magit-dimmed)
+            graph
+            rev-part
+            "\n")))
+
+(defun rere--insert-diffstat-section ()
+  "Insert diffstat section listing changed files and review stats."
+  (when (and rere-show-diffstat rere--diff-files)
+    (magit-insert-section (rere-diffstat nil nil)
+      (magit-insert-heading
+        (format "Files changed (%d)\n" (length rere--diff-files)))
+      (let* ((names (mapcar (lambda (f)
+                              (let ((fn (rere-file-diff-filename f)))
+                                (if (> (length fn) 35)
+                                    (concat "..."
+                                            (substring
+                                             fn (- (length fn) 32)))
+                                  fn)))
+                            rere--diff-files))
+             (max-len (min 35 (max 10 (apply #'max
+                                             (mapcar #'length names))))))
+        (dolist (file rere--diff-files)
+          (let* ((lines (cl-mapcan
+                         (lambda (h)
+                           (copy-sequence (rere-hunk-lines h)))
+                         (rere-file-diff-hunks file)))
+                 (reviewable (cl-remove-if-not #'rere--reviewable-p lines))
+                 (added (cl-count-if (lambda (l)
+                                       (eq (rere-diff-line-type l) 'added))
+                                     reviewable))
+                 (removed (cl-count-if (lambda (l)
+                                         (eq (rere-diff-line-type l) 'removed))
+                                       reviewable))
+                 (total (length reviewable))
+                 (reviewed (cl-count-if #'rere--reviewed-p reviewable)))
+            (magit-insert-section (rere-file-stat file nil)
+              (insert
+               (rere--format-file-diffstat
+                (rere-file-diff-filename file)
+                added removed reviewed total max-len))))))
       (insert "\n"))))
 
 (defun rere--insert-pending-section ()
@@ -1127,17 +1214,21 @@ If on a file header or diff line, toggle that file."
       (goto-char orig))))
 
 (defun rere-open-file ()
-  "Open the source file at the diff line at point."
+  "Open the source file at the diff line or file heading at point."
   (interactive)
-  (let ((dl (rere--section-diff-line)))
-    (unless dl
+  (let ((dl (rere--section-diff-line))
+        (file-diff (rere--section-file)))
+    (unless (or dl file-diff)
       (user-error
-       "[rere] No diff line at point"))
-    (let* ((file (rere-diff-line-file dl))
-           (line-num
-            (or (rere-diff-line-new-line dl)
-                (rere-diff-line-old-line dl)
-                1))
+       "[rere] No diff line or file at point"))
+    (let* ((file (if dl
+                     (rere-diff-line-file dl)
+                   (rere-file-diff-filename file-diff)))
+           (line-num (if dl
+                         (or (rere-diff-line-new-line dl)
+                             (rere-diff-line-old-line dl)
+                             1)
+                       1))
            (full-path
             (expand-file-name
              file
