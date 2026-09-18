@@ -723,5 +723,51 @@ index 0000000..1111111 100644
     ;; total 3 lines accepted
     (should (= (hash-table-count rere--reviewed) 3))))
 
+;;;; 100% completion tests
+
+(ert-deftest rere-test-100-percent-banner ()
+  "Buffer rendering displays completion banner at 100% review."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--commit-info
+          '(:sha "abcdef123456" :title "Test commit"
+                 :step 1 :total 1))
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    ;; mark all lines as reviewed
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (rere--reviewable-p dl)
+            (puthash (rere-diff-line-hash dl) t rere--reviewed)))))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (should (search-forward "100%]" nil t))
+    (should (search-forward "All changes reviewed for commit" nil t))
+    (should (search-forward "100% reviewed! Press 'q' to return" nil t))))
+
+(ert-deftest rere-test-100-percent-message ()
+  "Render buffer emits notification message when 100% is reached."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--commit-info
+          '(:sha "abcdef123456" :title "Test commit"
+                 :step 1 :total 1))
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (rere--reviewable-p dl)
+            (puthash (rere-diff-line-hash dl) t rere--reviewed)))))
+    (let ((msg nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq msg (apply #'format fmt args)))))
+        (rere--render-buffer))
+      (should (string-match-p "100% reviewed" msg)))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here

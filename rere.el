@@ -636,6 +636,10 @@ Otherwise, try to preserve cursor position."
       (rere--insert-reviewed-section)
       (rere--insert-footer))
     (magit-section-show magit-root-section)
+    (when (and (> rere--total-lines 0)
+               (= rere--reviewed-count rere--total-lines))
+      (message
+       "[rere] 100%% reviewed! Press 'q' to return, then continue in Magit."))
     ;; restore position
     (or (and saved-line-hash
              (rere--goto-line-hash saved-line-hash))
@@ -731,6 +735,8 @@ Return t if found."
                     rere--commit-info :step) 0))
          (total (or (plist-get
                      rere--commit-info :total) 0))
+         (done (and (> rere--total-lines 0)
+                    (= rere--reviewed-count rere--total-lines)))
          (pct (if (> rere--total-lines 0)
                   (/ (* 100 rere--reviewed-count)
                      rere--total-lines)
@@ -749,7 +755,17 @@ Return t if found."
         (format "Progress: %d/%d lines reviewed [%d%%]\n"
                 rere--reviewed-count
                 rere--total-lines pct)
-        'font-lock-face 'magit-section-heading))
+        'font-lock-face (if done
+                            'magit-diff-added
+                          'magit-section-heading)))
+      (when done
+        (insert
+         (propertize
+          (format
+           "\nAll changes reviewed for commit %s!\n  \
+Press 'q' to return, then amend or continue in Magit.\n"
+           short-sha)
+          'font-lock-face 'magit-diff-added)))
       (insert "\n"))))
 
 (defun rere--diffstat-graph (added removed max-width)
@@ -942,11 +958,13 @@ Return alist of (hunk . lines-to-render)."
 
 (defun rere--insert-footer ()
   "Insert footer with keybinding hints."
-  (when (= rere--reviewed-count rere--total-lines)
+  (when (and (> rere--total-lines 0)
+             (= rere--reviewed-count rere--total-lines))
     (insert
      (propertize
-      "\nAll changes reviewed.\n"
-      'font-lock-face 'magit-section-heading)))
+      (concat "\n100% reviewed! Press 'q' to return, "
+              "then amend or continue in Magit.\n")
+      'font-lock-face 'magit-diff-added)))
   (insert
    (propertize
     (concat "\n"
