@@ -363,7 +363,9 @@ index 0000000..1111111 100644
 (ert-deftest rere-test-git-dir-returns-path ()
   "Git dir returns a path in a git repo."
   (let ((default-directory
-         "/home/wolfie/Dokumenty/GitHub/rere.el/"))
+         (file-name-as-directory
+          (locate-dominating-file
+           (or load-file-name default-directory) ".git"))))
     (should (rere--git-dir))))
 
 ;;;; Rebase guard test
@@ -373,7 +375,9 @@ index 0000000..1111111 100644
   ;; I test in the rere.el repo which is not
   ;; in a rebase right now :)
   (let ((default-directory
-         "/home/wolfie/Dokumenty/GitHub/rere.el/"))
+         (file-name-as-directory
+          (locate-dominating-file
+           (or load-file-name default-directory) ".git"))))
     (should-not (rere--rebase-in-progress-p))))
 
 ;;;; Target finding tests
