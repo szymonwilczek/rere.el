@@ -239,7 +239,7 @@ Return structured representation of the diff."
 
        ;; Diff lines
        ((and current-hunk
-             (string-match "^\\([+\\-\\ ]\\)" line))
+             (string-match "^\\([-+ ]\\)" line))
         (let* ((prefix (match-string 1 line))
                (content (substring line 1))
                (type (pcase prefix
