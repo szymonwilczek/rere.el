@@ -1,0 +1,116 @@
+#+title: rere.el
+#+author: Szymon Wilczek
+#+email: swilczek.lx@gmail.com
+#+language: en
+
+#+HTML: <div align="center">
+#+HTML:   <a href="https://www.gnu.org/software/emacs/"><img
+#+HTML:     src="https://img.shields.io/badge/Emacs-28.1+-blueviolet.svg"
+#+HTML:     alt="Emacs 28.1+"/></a>
+#+HTML:   <a href="https://www.gnu.org/licenses/gpl-3.0"><img
+#+HTML:     src="https://img.shields.io/badge/License-GPLv3-blue.svg"
+#+HTML:     alt="License GPLv3"/></a>
+#+HTML: </div>
+
+Passive, read-only code review interface for interactive Git rebase
+sessions in GNU Emacs.
+
+Provides a Magit-powered virtual staging area to inspect, verify, and accept
+changes line-by-line without touching the Git index or working tree.
+
+** Why?
+
+For years, my personal review workflow during an interactive Git rebase
+relied on a habit I coined /unpacking a commit/. Whenever I paused at a commit
+marked with =edit=, I would unpack it, typically [[https://github.com/szymonwilczek/dotfiles/blob/main/emacs/.config/emacs/modules/git/git-mod.el#L25][like this]], and step through
+the diff hunk by hunk using Magit's (or at the previous time - [[https://github.com/szymonwilczek/dotfiles/blob/main/emacs/.config/emacs/modules/git/git-mod.el#L4][Lazygit]]) staging
+area, verifying every change before committing it back.
+
+This technique gave me complete confidence in what went into each commit,
+but it was slow, tedious, and stressful. Touching the working tree and dirtying
+the index constantly posed risks: accidental edits, dirty working state, lost
+work-in-progress, and unnecessary commit SHA churn when nothing changed.
+
+For my own peace of mind, I wanted an automated solution that preserved the
+tactile satisfaction of staging changes without ever touching the Git tree
+or index. /"Unpacking a commit"/ was my own workflow invention - and =rere.el=
+is its direct evolution: a passive, virtual staging area that lets you
+review diffs with Magit ergonomics while leaving your repository state
+completely untouched. There are certainly other tools and other approaches,
+but =rere= was built to fit my workflow. It was designed by me, for me - and
+shared in case it scratches the same itch for *you*. If this sounds like how
+you review code as well, go ahead - that's why this package is public.
+
+** What's Inside
+
+- *Virtual Staging Area:* Review diffs line-by-line, hunk-by-hunk, or
+  file-by-file in memory without touching the index or working copy.
+- *Persistent Review State:* Remembers reviewed lines across buffer
+  reloads and rebase sessions via content-addressed hashing.
+- *No Git side effects:* Passive - no =git add=, =git commit=, etc; commit SHAs
+  remain intact.
+- *Magit-Native UI:* Built on =magit-section= with familiar faces, folding,
+  Evil navigation, and jump to source.
+
+** Installation
+
+*** Requirements
+- GNU Emacs 28.1 or newer.
+- [[https://magit.vc][Magit]] 3.0 or newer.
+
+*** use-package with built-in :vc
+#+begin_src elisp
+  (use-package rere
+    :vc (:url "https://github.com/szymonwilczek/rere.el" :branch "main")
+    :commands (rere))
+#+end_src
+
+*** straight.el
+#+begin_src elisp
+  (use-package rere
+    :straight (rere :type git :host github :repo "szymonwilczek/rere.el")
+    :commands (rere))
+#+end_src
+
+*** Elpaca
+#+begin_src elisp
+  (use-package rere
+    :ensure (:host github :repo "szymonwilczek/rere.el")
+    :commands (rere))
+#+end_src
+
+*** Manual / Git Clone
+#+begin_src bash
+  git clone https://github.com/szymonwilczek/rere.el.git \
+      ~/.config/emacs/packages/rere.el
+#+end_src
+
+#+begin_src elisp
+  (use-package rere
+    :load-path "~/.config/emacs/packages/rere.el"
+    :commands (rere))
+#+end_src
+
+** Key Bindings
+
+| Key     | Command                | Action                             |
+|---------+------------------------+------------------------------------|
+| =s=     | ~rere-accept-item~     | Accept line, hunk, or file         |
+| =S=     | ~rere-accept-hunk~     | Accept entire hunk                 |
+| =u=     | ~rere-undo-item~       | Undo accept; return to Pending     |
+| =n=/=p= | ~rere-next-diff-line~  | Jump to next / previous diff line  |
+| =]=/=[= | ~rere-next-file~       | Jump to next / previous file       |
+| =RET=   | ~rere-goto-source~     | Open source file at diff line      |
+| =r=     | ~rere-refresh~         | Re-parse diff, keep reviewed state |
+| =TAB=   | ~magit-section-toggle~ | Fold or expand section under point |
+| =q=     | ~rere-quit~            | Restore window layout and quit     |
+
+** Options and Variables
+
+| Variable         | Default | Description                             |
+|------------------+---------+-----------------------------------------|
+| ~rere-buffer-name~ | ~"*rere*"~  | Buffer name used for the review buffer. |
+
+** License
+
+[[file:LICENSE][GNU General Public License v3.0 (GPL-3.0-or-later)]]
