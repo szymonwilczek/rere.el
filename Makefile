@@ -32,7 +32,7 @@ check-style:
 	@awk 'length > 80 { \
 	  print FILENAME ":" FNR ": " $$0; found=1 \
 	} END { if (found) exit 1 }' \
-	  $(SRCS) $(TESTS) README.org 2>/dev/null; \
+	  $(SRCS) $(TESTS) && \
 	  echo "Style check passed."
 
 clean:
