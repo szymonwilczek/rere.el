@@ -718,14 +718,42 @@ Pending."
 (defvar rere-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
-    (define-key map (kbd "SPC") #'rere-accept-line)
     (define-key map (kbd "s") #'rere-smart-accept)
+    (define-key map (kbd "S") #'rere-smart-accept)
     (define-key map (kbd "u") #'rere-unaccept)
     (define-key map (kbd "RET") #'rere-open-file)
     (define-key map (kbd "r") #'rere-refresh)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
+
+;;;; Evil integration
+
+(defun rere--setup-evil ()
+  "Set up Evil keybindings for `rere-mode'.
+Bind review keys in normal state so Evil does not
+shadow them."
+  (when (bound-and-true-p evil-mode)
+    (evil-set-initial-state 'rere-mode 'normal)
+    (evil-define-key 'normal rere-mode-map
+      (kbd "s") #'rere-smart-accept
+      (kbd "S") #'rere-smart-accept
+      (kbd "u") #'rere-unaccept
+      (kbd "r") #'rere-refresh
+      (kbd "q") #'rere-quit
+      (kbd "RET") #'rere-open-file
+      (kbd "TAB") #'magit-section-toggle
+      (kbd "j") #'next-line
+      (kbd "k") #'previous-line
+      (kbd "g g") #'beginning-of-buffer
+      (kbd "G") #'end-of-buffer)))
+
+(with-eval-after-load 'evil
+  (rere--setup-evil))
+
+;; Also run now if evil is already loaded
+(when (featurep 'evil)
+  (rere--setup-evil))
 
 ;;;; Major mode
 
@@ -744,10 +772,12 @@ Only works during an interactive git rebase."
   (unless (rere--rebase-in-progress-p)
     (user-error
      "[rere] Not currently in an interactive rebase"))
-  (let ((config (current-window-configuration))
+  (let ((repo-dir default-directory)
+        (config (current-window-configuration))
         (buf (get-buffer-create rere-buffer-name)))
     (switch-to-buffer buf)
     (delete-other-windows)
+    (setq default-directory repo-dir)
     (unless (eq major-mode 'rere-mode)
       (rere-mode))
     (setq rere--saved-window-config config)
