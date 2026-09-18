@@ -362,12 +362,12 @@ Preserves point position relative to diff lines."
 
 (defun rere--current-section-path ()
   "Return path identifier for current section."
-  (when-let ((section (magit-current-section)))
+  (when-let* ((section (magit-current-section)))
     (magit-section-ident section)))
 
 (defun rere--line-hash-at-point ()
   "Return the diff-line hash at point, if any."
-  (when-let ((section (magit-current-section)))
+  (when-let* ((section (magit-current-section)))
     (let ((value (oref section value)))
       (when (rere-diff-line-p value)
         (rere-diff-line-hash value)))))
@@ -379,8 +379,8 @@ Preserves point position relative to diff lines."
       (save-excursion
         (goto-char (point-min))
         (while (and (not pos) (not (eobp)))
-          (when-let ((section
-                      (magit-current-section)))
+          (when-let* ((section
+                       (magit-current-section)))
             (let ((val (oref section value)))
               (when (and (rere-diff-line-p val)
                          (equal
@@ -397,8 +397,8 @@ Preserves point position relative to diff lines."
 Return t if found."
   (when path
     (ignore-errors
-      (when-let ((section
-                  (magit-get-section path)))
+      (when-let* ((section
+                   (magit-get-section path)))
         (goto-char (oref section start))
         t))))
 
@@ -539,26 +539,26 @@ Return alist of (hunk . matching-lines)."
 
 (defun rere--section-diff-line ()
   "Return the diff-line at point, or nil."
-  (when-let ((section (magit-current-section)))
+  (when-let* ((section (magit-current-section)))
     (let ((val (oref section value)))
       (when (rere-diff-line-p val) val))))
 
 (defun rere--section-hunk ()
   "Return the hunk at point, or nil."
-  (when-let ((section (magit-current-section)))
+  (when-let* ((section (magit-current-section)))
     (let ((val (oref section value)))
       (cond
        ((rere-hunk-p val) val)
        ((rere-diff-line-p val)
         ;; walk up to parent hunk section
-        (when-let ((parent
-                    (oref section parent)))
+        (when-let* ((parent
+                     (oref section parent)))
           (let ((pval (oref parent value)))
             (when (rere-hunk-p pval) pval))))))))
 
 (defun rere--section-file ()
   "Return the file-diff at point, or nil."
-  (when-let ((section (magit-current-section)))
+  (when-let* ((section (magit-current-section)))
     (let ((val (oref section value)))
       (cond
        ((rere-file-diff-p val) val)
@@ -575,7 +575,7 @@ Return alist of (hunk . matching-lines)."
   "Accept the diff line at point.
 Move it from Pending to Reviewed."
   (interactive)
-  (if-let ((dl (rere--section-diff-line)))
+  (if-let* ((dl (rere--section-diff-line)))
       (progn
         (rere--accept-line dl)
         (rere--render-buffer)
@@ -634,8 +634,8 @@ Move it back from Reviewed to Pending."
     (save-excursion
       (while (and (not found) (not (eobp)))
         (forward-line 1)
-        (when-let ((section
-                    (magit-current-section)))
+        (when-let* ((section
+                     (magit-current-section)))
           (let ((val (oref section value)))
             (when (and (rere-diff-line-p val)
                        (rere--pending-p val))
