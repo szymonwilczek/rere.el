@@ -215,6 +215,37 @@ index 0000000..1111111 100644
     ;; 3 reviewable lines: 1 removed + 2 added
     (should (= (hash-table-count reviewed) 3))))
 
+(ert-deftest rere-test-smart-accept-category ()
+  "Smart accept on Pending review heading accepts all pending lines."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "Pending review")
+    (rere-smart-accept)
+    (should (= rere--reviewed-count rere--total-lines))
+    (should (= rere--reviewed-count 4))))
+
+(ert-deftest rere-test-unaccept-category ()
+  "Unaccept on Reviewed changes heading restores all lines to pending."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "Pending review")
+    (rere-smart-accept)
+    (should (= rere--reviewed-count 4))
+    (goto-char (point-min))
+    (search-forward "Reviewed changes")
+    (rere-unaccept)
+    (should (= rere--reviewed-count 0))))
+
 ;;;; Counting tests
 
 (ert-deftest rere-test-count-lines ()

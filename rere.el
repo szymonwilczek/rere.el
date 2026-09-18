@@ -37,12 +37,12 @@
 ;;   M-x rere    (only works during interactive rebase)
 ;;
 ;; Key bindings:
-;;   SPC   - accept current line (move to Reviewed)
-;;   s     - smart accept (file/hunk/line)
+;;   s / S - smart accept (category/file/hunk/line)
 ;;   u     - undo accept (move back to Pending)
+;;   n / p - jump to next/previous diff line
 ;;   RET   - open source file at diff line
-;;   r     - refresh diff
 ;;   TAB   - toggle section visibility
+;;   r     - refresh diff
 ;;   q     - quit rere buffer
 
 ;;; Code:
@@ -713,9 +713,9 @@ Return alist of (hunk . lines-to-render)."
   (insert
    (propertize
     (concat "\n"
-            "SPC accept  s smart-accept  "
-            "u undo  RET edit  "
-            "r refresh  q quit\n")
+            "s accept  u undo  "
+            "n/p diff-line  TAB toggle  "
+            "RET edit  r refresh  q quit\n")
     'font-lock-face 'magit-dimmed)))
 
 ;;;; Interactive commands
@@ -757,8 +757,9 @@ Return alist of (hunk . lines-to-render)."
 (defalias 'rere-accept-line #'rere-smart-accept)
 
 (defun rere-smart-accept ()
-  "Smart accept: region, file, hunk, or line at point.
+  "Smart accept: region, category, file, hunk, or line at point.
 In visual mode or when region is active, accept selected lines.
+On Pending review heading, accept all pending changes.
 On a file heading, accept entire file.
 On a hunk heading, accept entire hunk.
 On a diff line, accept that line."
@@ -782,6 +783,8 @@ On a diff line, accept that line."
         (let ((val (oref section value)))
           (setq to-accept
                 (cond
+                 ((eq (oref section type) 'rere-pending)
+                  all-pending)
                  ((rere-file-diff-p val)
                   (cl-remove-if-not
                    #'rere--pending-p
@@ -807,7 +810,7 @@ On a diff line, accept that line."
       (rere--render-buffer target-hash))))
 
 (defun rere-unaccept ()
-  "Undo acceptance of region, line, hunk, or file at point.
+  "Undo acceptance of region, category, line, hunk, or file at point.
 Move items back from Reviewed to Pending."
   (interactive)
   (let* ((in-visual (and (bound-and-true-p evil-mode)
@@ -829,6 +832,8 @@ Move items back from Reviewed to Pending."
         (let ((val (oref section value)))
           (setq to-unaccept
                 (cond
+                 ((eq (oref section type) 'rere-reviewed)
+                  all-reviewed)
                  ((rere-diff-line-p val)
                   (when (rere--reviewed-p val)
                     (list val)))
