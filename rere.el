@@ -117,16 +117,7 @@
 (defvar-local rere--reviewed-count 0
   "Number of reviewed diff lines.")
 
-;;;; Rebase guard
-
-(defun rere--rebase-in-progress-p ()
-  "Return non-nil if an interactive rebase is active."
-  (let ((git-dir (rere--git-dir)))
-    (when git-dir
-      (or (file-directory-p
-           (expand-file-name "rebase-merge" git-dir))
-          (file-directory-p
-           (expand-file-name "rebase-apply" git-dir))))))
+;;;; Rebase guard and environment
 
 (defun rere--git-dir ()
   "Return the .git directory for the current repo."
@@ -135,31 +126,80 @@
     (when dir
       (expand-file-name ".git" dir))))
 
+(defun rere--rebase-dir ()
+  "Return the active rebase directory, or nil."
+  (when-let* ((git-dir (rere--git-dir)))
+    (cond
+     ((file-directory-p
+       (expand-file-name "rebase-merge" git-dir))
+      (expand-file-name "rebase-merge" git-dir))
+     ((file-directory-p
+       (expand-file-name "rebase-apply" git-dir))
+      (expand-file-name "rebase-apply" git-dir)))))
+
+(defun rere--rebase-in-progress-p ()
+  "Return non-nil if an interactive rebase is active."
+  (not (null (rere--rebase-dir))))
+
+;;;; State persistence
+
+(defun rere--save-reviewed-state ()
+  "Save reviewed hashes to the rebase state directory."
+  (when-let* ((rebase-dir (rere--rebase-dir))
+              (sha (plist-get rere--commit-info :sha)))
+    (let ((file (expand-file-name
+                 (format "rere-reviewed-%s" sha)
+                 rebase-dir))
+          (hashes '()))
+      (when rere--reviewed
+        (maphash (lambda (k _v) (push k hashes))
+                 rere--reviewed))
+      (with-temp-file file
+        (dolist (h (nreverse hashes))
+          (insert h "\n"))))))
+
+(defun rere--load-reviewed-state ()
+  "Load reviewed hashes from the rebase state directory.
+Return a hash table of reviewed hashes."
+  (let ((table (make-hash-table :test 'equal)))
+    (when-let* ((rebase-dir (rere--rebase-dir))
+                (sha (plist-get rere--commit-info :sha)))
+      (let ((file (expand-file-name
+                   (format "rere-reviewed-%s" sha)
+                   rebase-dir)))
+        (when (file-exists-p file)
+          (with-temp-buffer
+            (insert-file-contents file)
+            (dolist (line (split-string (buffer-string) "\n" t))
+              (puthash (string-trim line) t table))))))
+    table))
+
+(defun rere--cleanup-old-reviewed-states (current-sha)
+  "Delete review state files from previous commits in REBASE-DIR."
+  (when-let* ((rebase-dir (rere--rebase-dir)))
+    (dolist (f (file-expand-wildcards
+                (expand-file-name "rere-reviewed-*" rebase-dir)))
+      (unless (equal (file-name-nondirectory f)
+                     (format "rere-reviewed-%s" current-sha))
+        (ignore-errors (delete-file f))))))
+
 ;;;; Commit info
 
 (defun rere--read-commit-info ()
   "Read current commit info during rebase.
 Return a plist with :sha :title :step :total."
-  (let* ((git-dir (rere--git-dir))
-         (rebase-dir (cond
-                      ((file-directory-p
-                        (expand-file-name
-                         "rebase-merge" git-dir))
+  (let* ((rebase-dir (rere--rebase-dir))
+         (sha (and rebase-dir
+                   (rere--read-file-trimmed
+                    (expand-file-name
+                     "stopped-sha" rebase-dir))))
+         (msgnum (and rebase-dir
+                      (rere--read-file-trimmed
                        (expand-file-name
-                        "rebase-merge" git-dir))
-                      ((file-directory-p
-                        (expand-file-name
-                         "rebase-apply" git-dir))
-                       (expand-file-name
-                        "rebase-apply" git-dir))))
-         (sha (rere--read-file-trimmed
-               (expand-file-name
-                "stopped-sha" rebase-dir)))
-         (msgnum (rere--read-file-trimmed
-                  (expand-file-name
-                   "msgnum" rebase-dir)))
-         (end (rere--read-file-trimmed
-               (expand-file-name "end" rebase-dir)))
+                        "msgnum" rebase-dir))))
+         (end (and rebase-dir
+                   (rere--read-file-trimmed
+                    (expand-file-name "end" rebase-dir))))
          (title (string-trim
                  (shell-command-to-string
                   (format "git log -1 --format=%%s %s"
@@ -734,6 +774,7 @@ On a diff line, accept that line."
            (rere--find-next-target to-accept all-pending)))
       (dolist (dl to-accept)
         (rere--accept-line dl))
+      (rere--save-reviewed-state)
       (rere--render-buffer target-hash))))
 
 (defun rere-unaccept ()
@@ -780,6 +821,7 @@ Move items back from Reviewed to Pending."
            (rere--find-next-target to-unaccept all-reviewed)))
       (dolist (dl to-unaccept)
         (rere--unaccept-line dl))
+      (rere--save-reviewed-state)
       (rere--render-buffer target-hash))))
 
 (defun rere-toggle-section ()
@@ -862,6 +904,7 @@ Pending."
             (puthash (rere-diff-line-hash dl)
                      t rere--reviewed)))))
     (rere--count-lines)
+    (rere--save-reviewed-state)
     (rere--render-buffer)
     (message "[rere] Diff refreshed. %d/%d reviewed."
              rere--reviewed-count
@@ -870,6 +913,7 @@ Pending."
 (defun rere-quit ()
   "Quit the rere buffer and restore windows."
   (interactive)
+  (rere--save-reviewed-state)
   (let ((config rere--saved-window-config))
     (kill-buffer (current-buffer))
     (when config
@@ -953,13 +997,10 @@ Only works during an interactive git rebase."
       (rere-mode))
     (setq rere--saved-window-config config)
     (let* ((new-info (rere--read-commit-info))
-           (old-sha (plist-get rere--commit-info :sha))
            (new-sha (plist-get new-info :sha)))
-      (when (or (null rere--reviewed)
-                (not (equal old-sha new-sha)))
-        (setq rere--reviewed
-              (make-hash-table :test 'equal)))
-      (setq rere--commit-info new-info))
+      (rere--cleanup-old-reviewed-states new-sha)
+      (setq rere--commit-info new-info)
+      (setq rere--reviewed (rere--load-reviewed-state)))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
     (rere--render-buffer)
