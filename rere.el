@@ -1,4 +1,4 @@
-;;; rere.el --- Rebase Review for GNU Emacs  -*- lexical-binding: t; -*-
+;;; rere.el --- Review git rebase diffs line by line  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Szymon Wilczek
 
