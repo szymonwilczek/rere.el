@@ -820,11 +820,15 @@ MAX-DIGITS is the maximum width of the total diff count column."
          (digits (or max-digits
                      (length (number-to-string tot-diff))))
          (num-fmt (format "%%-%dd " digits))
-         (graph (rere--diffstat-graph added removed 15))
+         (max-graph-width 15)
+         (graph (rere--diffstat-graph added removed max-graph-width))
+         (graph-pad (make-string
+                     (max 2 (+ (- max-graph-width (length graph)) 2))
+                     ?\s))
          (rev-part (if (= reviewed total)
-                       (propertize (format "  [%d/%d]" reviewed total)
+                       (propertize (format "[%d/%d]" reviewed total)
                                    'font-lock-face 'magit-diff-added)
-                     (propertize (format "  [%d/%d]" reviewed total)
+                     (propertize (format "[%d/%d]" reviewed total)
                                  'font-lock-face 'magit-dimmed))))
     (concat (propertize (concat "  " disp-fn)
                         'font-lock-face 'magit-diff-file-heading)
@@ -833,6 +837,7 @@ MAX-DIGITS is the maximum width of the total diff count column."
             (propertize (format num-fmt tot-diff)
                         'font-lock-face 'magit-dimmed)
             graph
+            graph-pad
             rev-part
             "\n")))
 

@@ -753,6 +753,17 @@ index 0000000..1111111 100644
     (should (string-match-p "| 2   \\+-" (substring-no-properties s1)))
     (should (string-match-p "| 278 \\+" (substring-no-properties s2)))))
 
+(ert-deftest rere-test-diffstat-aligned-reviewed-stats ()
+  "Diffstat [reviewed/total] stats align at the same column across files."
+  (let* ((s1 (rere--format-file-diffstat "foo.el" 1 1 0 2 10 3))
+         (s2 (rere--format-file-diffstat "bar.el" 200 78 0 278 10 3))
+         (s3 (rere--format-file-diffstat "baz.el" 6 4 0 10 10 3))
+         (pos1 (string-match "\\[" s1))
+         (pos2 (string-match "\\[" s2))
+         (pos3 (string-match "\\[" s3)))
+    (should (= pos1 pos2))
+    (should (= pos2 pos3))))
+
 (ert-deftest rere-test-diffstat-section-rendered ()
   "Buffer rendering includes Files changed section."
   (with-temp-buffer
