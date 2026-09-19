@@ -88,7 +88,7 @@
 ;;;; Faces
 
 (defface rere-flagged-line
-  '((t :inherit warning))
+  '((t :inherit (magit-diff-base diff-changed) :extend t))
   "Face for flagged (stinky) diff lines."
   :group 'rere)
 
@@ -994,6 +994,7 @@ Otherwise, try to preserve cursor position."
              (rere--goto-line-hash saved-line-hash))
         (rere--goto-section-path saved-section-path)
         (rere--goto-first-pending)
+        (rere--goto-first-flagged)
         (rere--goto-pending-section)
         (goto-char (point-min)))))
 
@@ -1016,6 +1017,14 @@ Otherwise, try to preserve cursor position."
 Return t if found, nil otherwise."
   (when-let* ((pos (text-property-any (point-min) (point-max)
                                       'rere-pending t)))
+    (goto-char pos)
+    t))
+
+(defun rere--goto-first-flagged ()
+  "Move point to the first flagged diff line.
+Return t if found, nil otherwise."
+  (when-let* ((pos (text-property-any (point-min) (point-max)
+                                      'rere-flagged t)))
     (goto-char pos)
     t))
 
@@ -1665,7 +1674,12 @@ resolved before 100% review can be reached."
     (unless lines
       (user-error "[rere] No reviewable diff line at point"))
     (let* ((all-flagged (cl-every #'rere--flagged-p lines))
-           (target-hash (rere-diff-line-hash (car lines))))
+           (target-hash
+            (if all-flagged
+                (rere--find-next-target
+                 lines (rere--flagged-diff-lines))
+              (rere--find-next-target
+               lines (rere--pending-diff-lines)))))
       (dolist (dl lines)
         (if all-flagged
             (rere--unflag-line dl)

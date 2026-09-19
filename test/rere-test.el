@@ -1055,6 +1055,28 @@ index 0000000..1111111 100644
       (goto-char (point-min))
       (should-not (search-forward "Stinky changes" nil t)))))
 
+(ert-deftest rere-test-flag-advances-to-next-pending ()
+  "Flagging a line moves point to next pending line, not to stinky section."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (rere--render-buffer)
+    ;; move to first pending line (in foo.el)
+    (rere--goto-first-pending)
+    (let* ((first-dl (rere--section-diff-line))
+           (pending-lines (rere--pending-diff-lines))
+           (second-dl (cadr pending-lines))
+           (second-hash (rere-diff-line-hash second-dl)))
+      ;; flag the first line
+      (rere-toggle-flag)
+      ;; first line is now flagged
+      (should (rere--flagged-p first-dl))
+      ;; point must be on the SECOND pending line in Pending review
+      (should (equal (rere--line-hash-at-point) second-hash))
+      (should (get-text-property (point) 'rere-pending))
+      (should-not (get-text-property (point) 'rere-flagged)))))
+
 (ert-deftest rere-test-flag-blocks-100-percent ()
   "Flagged lines block 100% review even if all other lines are reviewed."
   (with-temp-buffer
