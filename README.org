@@ -45,8 +45,21 @@ you review code as well, go ahead - that's why this package is public.
 
 - *Virtual Staging Area:* Review diffs line-by-line, hunk-by-hunk, or
   file-by-file in memory without touching the index or working copy.
-- *Persistent Review State:* Remembers reviewed lines across buffer
-  reloads and rebase sessions via content-addressed hashing.
+- *Persistent Review State:* Remembers reviewed and flagged lines across
+  buffer reloads and rebase sessions via content-addressed hashing.
+- *Diffstat Overview:* Per-file summary of additions, removals, and review
+  progress displayed at the top of the buffer.
+- *Word-Level Refinement:* Highlights word-level differences within
+  modified lines for precise change identification.
+- *Stinky Changes:* Flag suspicious lines for later review.  Flagged lines
+  are collected in a dedicated /Stinky changes/ section and block 100%
+  completion until resolved.
+- *Focus Mode:* Narrow the view to a single file to reduce noise during
+  review.
+- *Smart Accept and Undo:* Context-aware operations that act on the element
+  under the cursor (line, hunk, file) or a visual region.
+- *In-Place Patching:* Single-line accepts are performed instantly via
+  overlay-based buffer patching, avoiding full redraws.
 - *No Git side effects:* Passive - no =git add=, =git commit=, etc; commit SHAs
   remain intact.
 - *Magit-Native UI:* Built on =magit-section= with familiar faces, folding,
@@ -93,23 +106,51 @@ you review code as well, go ahead - that's why this package is public.
 
 ** Key Bindings
 
-| Key     | Command                | Action                             |
-|---------+------------------------+------------------------------------|
-| =s=     | ~rere-accept-item~     | Accept line, hunk, or file         |
-| =S=     | ~rere-accept-hunk~     | Accept entire hunk                 |
-| =u=     | ~rere-undo-item~       | Undo accept; return to Pending     |
-| =n=/=p= | ~rere-next-diff-line~  | Jump to next / previous diff line  |
-| =]=/=[= | ~rere-next-file~       | Jump to next / previous file       |
-| =RET=   | ~rere-goto-source~     | Open source file at diff line      |
-| =r=     | ~rere-refresh~         | Re-parse diff, keep reviewed state |
-| =TAB=   | ~magit-section-toggle~ | Fold or expand section under point |
-| =q=     | ~rere-quit~            | Restore window layout and quit     |
+*** Review
 
-** Options and Variables
+| Key   | Command           | Action                                          |
+|-------+-------------------+-------------------------------------------------|
+| =s= / =S= | ~rere-smart-accept~ | Smart accept: line, hunk, file, or category     |
+| =u=     | ~rere-unaccept~     | Smart undo: line, hunk, or file back to Pending |
+| =m=     | ~rere-toggle-flag~  | Toggle flag (stinky) on line or region          |
+| =M=     | ~rere-next-flagged~ | Jump to next flagged line                       |
 
-| Variable         | Default | Description                             |
-|------------------+---------+-----------------------------------------|
-| ~rere-buffer-name~ | ~"*rere*"~  | Buffer name used for the review buffer. |
+*** Navigation
+
+| Key   | Command                | Action                               |
+|-------+------------------------+--------------------------------------|
+| =n= / =p= | ~rere-next-diff-line~    | Jump to next / previous diff line    |
+| =]= / =[= | ~rere-next-file~         | Jump to next / previous file         |
+| =}= / ={= | ~rere-next-pending-file~ | Jump to next / previous pending file |
+| =RET=   | ~rere-open-file~         | Open source file at diff line        |
+
+*** Display
+
+| Key | Command             | Action                                 |
+|-----+---------------------+----------------------------------------|
+| =TAB= | ~rere-toggle-section~ | Toggle section visibility              |
+| =f=   | ~rere-toggle-focus~   | Toggle focus mode on file at point     |
+| =c=   | ~rere-toggle-context~ | Toggle context lines in diff hunks     |
+| =r=   | ~rere-refresh~        | Re-parse diff, preserve reviewed state |
+| =q=   | ~rere-quit~           | Restore window layout and quit         |
+
+All bindings work in both Emacs and Evil (normal, motion, and visual states).
+Visual selections are supported for =s=, =u=, and =m=.
+
+** Options
+
+| Variable              | Default | Description                                |
+|-----------------------+---------+--------------------------------------------|
+| ~rere-buffer-name~      | ~"*rere*"~  | Buffer name used for the review buffer.    |
+| ~rere-refine-highlight~ | ~t~       | Enable word-level difference highlighting. |
+| ~rere-show-diffstat~    | ~t~       | Display per-file diffstat summary section. |
+
+** Faces
+
+| Face                 | Description                           |
+|----------------------+---------------------------------------|
+| ~rere-flagged-line~    | Face for flagged (stinky) diff lines. |
+| ~rere-flagged-heading~ | Face for the Stinky changes heading.  |
 
 ** License
 
