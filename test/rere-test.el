@@ -974,5 +974,183 @@ index 0000000..1111111 100644
             (should (oref collapsed-sec hidden))))))))
 
 
+(ert-deftest rere-test-toggle-focus ()
+  "Focus mode shows only the selected file diff."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (rere--render-buffer)
+    ;; point is on foo.el
+    (rere--goto-first-pending)
+    (rere-toggle-focus)
+    (should (equal rere--focused-file "foo.el"))
+    (goto-char (point-min))
+    (should (search-forward "Focus: foo.el (press 'f' to show all)" nil t))
+    ;; foo.el should be rendered
+    (should (search-forward "modified   foo.el" nil t))
+    ;; bar.el should NOT be rendered in diff lines
+    (goto-char (point-min))
+    (should (search-forward "Pending review" nil t))
+    (should-not (search-forward "modified   bar.el" nil t))
+    ;; toggle focus again clears it
+    (rere-toggle-focus)
+    (should-not rere--focused-file)
+    (goto-char (point-min))
+    (should-not (search-forward "Focus:" nil t))
+    (should (search-forward "modified   bar.el" nil t))))
+
+(ert-deftest rere-test-toggle-context ()
+  "Context toggle shows or hides context lines."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--simple-diff))
+    (rere--render-buffer)
+    ;; context lines are visible initially
+    (goto-char (point-min))
+    (should (search-forward "  ctx" nil t))
+    ;; toggle context hides them
+    (rere-toggle-context)
+    (should-not rere--show-context)
+    (goto-char (point-min))
+    (should-not (search-forward "  ctx" nil t))
+    (should (search-forward "+added-line" nil t))
+    ;; toggle again restores them
+    (rere-toggle-context)
+    (should rere--show-context)
+    (goto-char (point-min))
+    (should (search-forward "  ctx" nil t))))
+
+(ert-deftest rere-test-flag-line-and-stinky-section ()
+  "Flagging lines moves them to Stinky changes with warning face."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--simple-diff))
+    (rere--render-buffer)
+    ;; initially no stinky section
+    (goto-char (point-min))
+    (should-not (search-forward "Stinky changes" nil t))
+    ;; move to diff line and flag it
+    (rere--goto-first-pending)
+    (let* ((dl (rere--section-diff-line))
+           (hash (rere-diff-line-hash dl)))
+      (rere-toggle-flag)
+      (should (rere--flagged-p dl))
+      (goto-char (point-min))
+      (should (search-forward "Stinky changes (1)" nil t))
+      ;; line should have rere-flagged-line face and property
+      (let ((pos (text-property-any (point-min) (point-max)
+                                    'rere-line-hash hash)))
+        (should pos)
+        (should (get-text-property pos 'rere-flagged))
+        (should (eq (get-text-property pos 'font-lock-face)
+                    'rere-flagged-line)))
+      ;; unflagging line removes stinky section
+      (goto-char (text-property-any (point-min) (point-max)
+                                    'rere-line-hash hash))
+      (rere-toggle-flag)
+      (should-not (rere--flagged-p dl))
+      (goto-char (point-min))
+      (should-not (search-forward "Stinky changes" nil t)))))
+
+(ert-deftest rere-test-flag-blocks-100-percent ()
+  "Flagged lines block 100% review even if all other lines are reviewed."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (setq rere--flagged (make-hash-table :test 'equal))
+    ;; review all lines except the last one, which is flagged
+    (let ((all-rev-lines '()))
+      (dolist (file rere--diff-files)
+        (dolist (hunk (rere-file-diff-hunks file))
+          (dolist (dl (rere-hunk-lines hunk))
+            (when (rere--reviewable-p dl)
+              (push dl all-rev-lines)))))
+      (let ((flag-dl (car all-rev-lines))
+            (rev-dls (cdr all-rev-lines)))
+        (puthash (rere-diff-line-hash flag-dl) t rere--flagged)
+        (dolist (dl rev-dls)
+          (puthash (rere-diff-line-hash dl) t rere--reviewed))))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    ;; 100% banner should NOT appear
+    (should-not (search-forward "100%]" nil t))
+    (should-not (search-forward "All changes reviewed for commit" nil t))
+    ;; Progress should show (1 flagged)
+    (goto-char (point-min))
+    (should (search-forward "(1 flagged)" nil t))
+    ;; Stinky section is present
+    (goto-char (point-min))
+    (should (search-forward "Stinky changes (1)" nil t))))
+
+(ert-deftest rere-test-next-flagged ()
+  "Jump to next flagged line using rere-next-flagged."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--flagged (make-hash-table :test 'equal))
+    ;; flag the second reviewable line
+    (let ((rev-lines '()))
+      (dolist (file rere--diff-files)
+        (dolist (hunk (rere-file-diff-hunks file))
+          (dolist (dl (rere-hunk-lines hunk))
+            (when (rere--reviewable-p dl)
+              (push dl rev-lines)))))
+      (let ((target-dl (nth 1 (nreverse rev-lines))))
+        (puthash (rere-diff-line-hash target-dl) t rere--flagged)
+        (rere--render-buffer)
+        (goto-char (point-min))
+        (rere-next-flagged)
+        (should (get-text-property (point) 'rere-flagged))
+        (should (equal (get-text-property (point) 'rere-line-hash)
+                       (rere-diff-line-hash target-dl)))))))
+
+(ert-deftest rere-test-next-and-previous-pending-file ()
+  "Navigate between files with pending changes using { and }."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    ;; accept all lines in foo.el, bar.el remains pending
+    (rere--accept-file-lines (nth 0 rere--diff-files))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    ;; } should jump to bar.el in pending section
+    (rere-next-pending-file)
+    (let ((sec (magit-current-section)))
+      (should (eq (oref sec type) 'rere-file-section))
+      (should (equal (rere-file-diff-filename (oref sec value))
+                     "bar.el")))
+    ;; { from bottom should jump back to bar.el
+    (goto-char (point-max))
+    (rere-previous-pending-file)
+    (let ((sec (magit-current-section)))
+      (should (eq (oref sec type) 'rere-file-section))
+      (should (equal (rere-file-diff-filename (oref sec value))
+                     "bar.el")))))
+
+(ert-deftest rere-test-save-and-load-flagged-state ()
+  "Save and load flagged state to/from rebase dir."
+  (let ((tmp-dir (make-temp-file "rere-test-flagged-" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rere--rebase-dir)
+                   (lambda () tmp-dir)))
+          (with-temp-buffer
+            (rere-mode)
+            (setq rere--commit-info '(:sha "flag123"))
+            (setq rere--reviewed (make-hash-table :test 'equal))
+            (setq rere--flagged (make-hash-table :test 'equal))
+            (puthash "h-flagged" t rere--flagged)
+            (rere--save-reviewed-state)
+            (let ((loaded (rere--load-flagged-state)))
+              (should (gethash "h-flagged" loaded)))))
+      (delete-directory tmp-dir t))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here

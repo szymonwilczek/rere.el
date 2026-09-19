@@ -55,6 +55,8 @@
 
 (declare-function evil-define-key "evil-core"
                   (state keymap key def &rest bindings))
+(declare-function evil-local-set-key "evil-core"
+                  (state key def))
 (declare-function evil-set-initial-state "evil-core"
                   (mode state))
 (declare-function evil-normal-state "evil-states" ())
@@ -81,6 +83,18 @@
 (defcustom rere-show-diffstat t
   "Whether to display the file diffstat summary section."
   :type 'boolean
+  :group 'rere)
+
+;;;; Faces
+
+(defface rere-flagged-line
+  '((t :inherit warning))
+  "Face for flagged (stinky) diff lines."
+  :group 'rere)
+
+(defface rere-flagged-heading
+  '((t :inherit (warning magit-section-heading)))
+  "Face for flagged section heading."
   :group 'rere)
 
 ;;;; Data structures
@@ -116,6 +130,15 @@
 
 (defvar-local rere--reviewed nil
   "Hash table of reviewed line hashes.")
+
+(defvar-local rere--flagged nil
+  "Hash table of flagged line hashes.")
+
+(defvar-local rere--focused-file nil
+  "Filename currently focused, or nil if showing all files.")
+
+(defvar-local rere--show-context t
+  "Whether to display context lines in diff hunks.")
 
 (defvar-local rere--commit-info nil
   "Plist with :sha :title :step :total.")
@@ -156,19 +179,29 @@
 ;;;; State persistence
 
 (defun rere--save-reviewed-state ()
-  "Save reviewed hashes to the rebase state directory."
+  "Save reviewed and flagged hashes to the rebase state directory."
   (when-let* ((rebase-dir (rere--rebase-dir))
               (sha (plist-get rere--commit-info :sha)))
-    (let ((file (expand-file-name
-                 (format "rere-reviewed-%s" sha)
-                 rebase-dir))
-          (hashes '())
+    (let ((rev-file (expand-file-name
+                     (format "rere-reviewed-%s" sha)
+                     rebase-dir))
+          (flag-file (expand-file-name
+                      (format "rere-flagged-%s" sha)
+                      rebase-dir))
+          (rev-hashes '())
+          (flag-hashes '())
           (write-region-inhibit-fsync t))
       (when rere--reviewed
-        (maphash (lambda (k _v) (push k hashes))
+        (maphash (lambda (k _v) (push k rev-hashes))
                  rere--reviewed))
-      (with-temp-file file
-        (dolist (h (nreverse hashes))
+      (with-temp-file rev-file
+        (dolist (h (nreverse rev-hashes))
+          (insert h "\n")))
+      (when rere--flagged
+        (maphash (lambda (k _v) (push k flag-hashes))
+                 rere--flagged))
+      (with-temp-file flag-file
+        (dolist (h (nreverse flag-hashes))
           (insert h "\n"))))))
 
 (defvar-local rere--save-state-timer nil
@@ -210,14 +243,33 @@ Return a hash table of reviewed hashes."
               (puthash (string-trim line) t table))))))
     table))
 
+(defun rere--load-flagged-state ()
+  "Load flagged hashes from the rebase state directory.
+Return a hash table of flagged hashes."
+  (let ((table (make-hash-table :test 'equal)))
+    (when-let* ((rebase-dir (rere--rebase-dir))
+                (sha (plist-get rere--commit-info :sha)))
+      (let ((file (expand-file-name
+                   (format "rere-flagged-%s" sha)
+                   rebase-dir)))
+        (when (file-exists-p file)
+          (with-temp-buffer
+            (insert-file-contents file)
+            (dolist (line (split-string (buffer-string) "\n" t))
+              (puthash (string-trim line) t table))))))
+    table))
+
 (defun rere--cleanup-old-reviewed-states (current-sha)
   "Delete review state files from previous commits in REBASE-DIR."
   (when-let* ((rebase-dir (rere--rebase-dir)))
-    (dolist (f (file-expand-wildcards
-                (expand-file-name "rere-reviewed-*" rebase-dir)))
-      (unless (equal (file-name-nondirectory f)
-                     (format "rere-reviewed-%s" current-sha))
-        (ignore-errors (delete-file f))))))
+    (dolist (prefix '("rere-reviewed-*" "rere-flagged-*"))
+      (dolist (f (file-expand-wildcards
+                  (expand-file-name prefix rebase-dir)))
+        (unless (or (equal (file-name-nondirectory f)
+                           (format "rere-reviewed-%s" current-sha))
+                    (equal (file-name-nondirectory f)
+                           (format "rere-flagged-%s" current-sha)))
+          (ignore-errors (delete-file f)))))))
 
 ;;;; Commit info
 
@@ -553,10 +605,30 @@ Only added and removed lines are reviewable."
        (gethash (rere-diff-line-hash diff-line)
                 rere--reviewed)))
 
+(defun rere--flagged-p (diff-line)
+  "Return non-nil if DIFF-LINE is flagged."
+  (and rere--flagged
+       (gethash (rere-diff-line-hash diff-line)
+                rere--flagged)))
+
+(defun rere--flagged-count ()
+  "Return the number of flagged diff lines."
+  (if rere--flagged
+      (hash-table-count rere--flagged)
+    0))
+
 (defun rere--pending-p (diff-line)
   "Return non-nil if DIFF-LINE is pending review."
   (and (rere--reviewable-p diff-line)
-       (not (rere--reviewed-p diff-line))))
+       (not (rere--reviewed-p diff-line))
+       (not (rere--flagged-p diff-line))))
+
+(defun rere--file-has-pending-p (file-diff)
+  "Return non-nil if FILE-DIFF has any pending lines."
+  (cl-some
+   (lambda (hunk)
+     (cl-some #'rere--pending-p (rere-hunk-lines hunk)))
+   (rere-file-diff-hunks file-diff)))
 
 ;;;; Counting
 
@@ -615,7 +687,8 @@ next pending line.  Returns t if patch was performed."
     ;; 7) check 100%
     (when (and (> rere--total-lines 0)
                (= rere--reviewed-count
-                  rere--total-lines))
+                  rere--total-lines)
+               (zerop (rere--flagged-count)))
       (rere--render-buffer)
       (message
        "[rere] 100%% reviewed! \
@@ -672,15 +745,17 @@ Press 'q' to return, then continue in Magit."))
         (delete-region beg end)
         (insert (propertize
                  new 'font-lock-face
-                 (if (= rere--reviewed-count
-                        rere--total-lines)
+                 (if (and (= rere--reviewed-count
+                             rere--total-lines)
+                          (zerop (rere--flagged-count)))
                      'magit-diff-added
                    'magit-section-heading)))))
     (goto-char (point-min))
     (when (re-search-forward
            "^Pending review (\\([0-9]+\\))" nil t)
       (let* ((pending (- rere--total-lines
-                         rere--reviewed-count))
+                         rere--reviewed-count
+                         (rere--flagged-count)))
              (new (number-to-string pending))
              (beg (match-beginning 1))
              (end (match-end 1))
@@ -749,6 +824,9 @@ Press 'q' to return, then continue in Magit."))
 (defun rere--accept-line (diff-line)
   "Mark DIFF-LINE as reviewed."
   (when (rere--reviewable-p diff-line)
+    (when rere--flagged
+      (remhash (rere-diff-line-hash diff-line)
+               rere--flagged))
     (unless rere--reviewed
       (setq rere--reviewed
             (make-hash-table :test 'equal)))
@@ -757,9 +835,30 @@ Press 'q' to return, then continue in Magit."))
 
 (defun rere--unaccept-line (diff-line)
   "Mark DIFF-LINE as not reviewed (pending)."
+  (when rere--flagged
+    (remhash (rere-diff-line-hash diff-line)
+             rere--flagged))
   (when rere--reviewed
     (remhash (rere-diff-line-hash diff-line)
              rere--reviewed)))
+
+(defun rere--flag-line (diff-line)
+  "Mark DIFF-LINE as flagged."
+  (when (rere--reviewable-p diff-line)
+    (when rere--reviewed
+      (remhash (rere-diff-line-hash diff-line)
+               rere--reviewed))
+    (unless rere--flagged
+      (setq rere--flagged
+            (make-hash-table :test 'equal)))
+    (puthash (rere-diff-line-hash diff-line)
+             t rere--flagged)))
+
+(defun rere--unflag-line (diff-line)
+  "Remove flag from DIFF-LINE."
+  (when rere--flagged
+    (remhash (rere-diff-line-hash diff-line)
+             rere--flagged)))
 
 (defun rere--accept-hunk-lines (hunk)
   "Mark all reviewable lines in HUNK as reviewed."
@@ -780,6 +879,16 @@ Press 'q' to return, then continue in Magit."))
       (dolist (hunk (rere-file-diff-hunks file))
         (dolist (dl (rere-hunk-lines hunk))
           (when (rere--pending-p dl)
+            (push dl lines)))))
+    (nreverse lines)))
+
+(defun rere--flagged-diff-lines ()
+  "Return list of all diff lines currently flagged."
+  (let ((lines nil))
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (rere--flagged-p dl)
             (push dl lines)))))
     (nreverse lines)))
 
@@ -871,11 +980,13 @@ Otherwise, try to preserve cursor position."
       (rere--insert-header)
       (rere--insert-diffstat-section)
       (rere--insert-pending-section)
+      (rere--insert-stinky-section)
       (rere--insert-reviewed-section)
       (rere--insert-footer))
     (magit-section-show magit-root-section)
     (when (and (> rere--total-lines 0)
-               (= rere--reviewed-count rere--total-lines))
+               (= rere--reviewed-count rere--total-lines)
+               (zerop (rere--flagged-count)))
       (message
        "[rere] 100%% reviewed! Press 'q' to return, then continue in Magit."))
     ;; restore position
@@ -950,8 +1061,10 @@ Return t if found."
                     rere--commit-info :step) 0))
          (total (or (plist-get
                      rere--commit-info :total) 0))
+         (flagged-count (rere--flagged-count))
          (done (and (> rere--total-lines 0)
-                    (= rere--reviewed-count rere--total-lines)))
+                    (= rere--reviewed-count rere--total-lines)
+                    (zerop flagged-count)))
          (pct (if (> rere--total-lines 0)
                   (/ (* 100 rere--reviewed-count)
                      rere--total-lines)
@@ -967,12 +1080,23 @@ Return t if found."
         'font-lock-face 'magit-section-heading))
       (insert
        (propertize
-        (format "Progress: %d/%d lines reviewed [%d%%]\n"
+        (format "Progress: %d/%d lines reviewed [%d%%]%s\n"
                 rere--reviewed-count
-                rere--total-lines pct)
+                rere--total-lines pct
+                (if (> flagged-count 0)
+                    (format " (%d flagged)" flagged-count)
+                  ""))
         'font-lock-face (if done
                             'magit-diff-added
-                          'magit-section-heading)))
+                          (if (> flagged-count 0)
+                              'warning
+                            'magit-section-heading))))
+      (when rere--focused-file
+        (insert
+         (propertize
+          (format "Focus: %s (press 'f' to show all)\n"
+                  rere--focused-file)
+          'font-lock-face 'magit-diff-file-heading)))
       (when done
         (insert
          (propertize
@@ -1097,7 +1221,9 @@ MAX-DIGITS is the maximum width of the total diff count column."
 (defun rere--insert-pending-section ()
   "Insert the Pending review section."
   (let ((pending-count
-         (- rere--total-lines rere--reviewed-count)))
+         (- rere--total-lines
+            rere--reviewed-count
+            (rere--flagged-count))))
     (magit-insert-section (rere-pending nil nil)
       (magit-insert-heading
         (format "Pending review (%d)\n" pending-count))
@@ -1108,6 +1234,18 @@ MAX-DIGITS is the maximum width of the total diff count column."
                        'magit-dimmed))
         (rere--insert-diff-lines #'rere--pending-p))
       (insert "\n"))))
+
+(defun rere--insert-stinky-section ()
+  "Insert the Stinky (flagged) changes section if any lines are flagged."
+  (let ((count (rere--flagged-count)))
+    (when (> count 0)
+      (magit-insert-section (rere-stinky nil nil)
+        (magit-insert-heading
+          (propertize
+           (format "Stinky changes (%d)\n" count)
+           'font-lock-face 'rere-flagged-heading))
+        (rere--insert-diff-lines #'rere--flagged-p)
+        (insert "\n")))))
 
 (defun rere--insert-reviewed-section ()
   "Insert the Reviewed changes section."
@@ -1131,33 +1269,40 @@ MAX-DIGITS is the maximum width of the total diff count column."
 
 (defun rere--insert-diff-lines (pred)
   "Insert diff lines matching PRED grouped by file/hunk."
-  (dolist (file rere--diff-files)
-    (let ((file-lines
-           (rere--collect-file-lines file pred)))
-      (when file-lines
-        (magit-insert-section
-            (rere-file-section file nil)
-          (magit-insert-heading
-            (propertize
-             (format "  modified   %s\n"
-                     (rere-file-diff-filename file))
-             'font-lock-face
-             'magit-diff-file-heading))
-          (dolist (hunk-data file-lines)
-            (let ((hunk (car hunk-data))
-                  (lines (cdr hunk-data)))
-              (magit-insert-section
-                  (rere-hunk-section hunk nil)
-                (magit-insert-heading
-                  (propertize
-                   (concat "  "
-                           (rere-hunk-header hunk)
-                           "\n")
-                   'font-lock-face
-                   'magit-diff-hunk-heading))
-                (dolist (dl lines)
-                  (rere--insert-single-line
-                   dl))))))))))
+  (let ((files (if rere--focused-file
+                   (cl-remove-if-not
+                    (lambda (f)
+                      (equal (rere-file-diff-filename f)
+                             rere--focused-file))
+                    rere--diff-files)
+                 rere--diff-files)))
+    (dolist (file files)
+      (let ((file-lines
+             (rere--collect-file-lines file pred)))
+        (when file-lines
+          (magit-insert-section
+              (rere-file-section file nil)
+            (magit-insert-heading
+              (propertize
+               (format "  modified   %s\n"
+                       (rere-file-diff-filename file))
+               'font-lock-face
+               'magit-diff-file-heading))
+            (dolist (hunk-data file-lines)
+              (let ((hunk (car hunk-data))
+                    (lines (cdr hunk-data)))
+                (magit-insert-section
+                    (rere-hunk-section hunk nil)
+                  (magit-insert-heading
+                    (propertize
+                     (concat "  "
+                             (rere-hunk-header hunk)
+                             "\n")
+                     'font-lock-face
+                     'magit-diff-hunk-heading))
+                  (dolist (dl lines)
+                    (rere--insert-single-line
+                     dl)))))))))))
 
 (defun rere--collect-file-lines (file-diff pred)
   "Collect lines from FILE-DIFF matching PRED with surrounding context.
@@ -1171,7 +1316,8 @@ Return alist of (hunk . lines-to-render)."
            ((funcall pred dl)
             (setq has-matching t)
             (push dl lines))
-           ((eq (rere-diff-line-type dl) 'context)
+           ((and rere--show-context
+                 (eq (rere-diff-line-type dl) 'context))
             (push dl lines))))
         (when has-matching
           (push (cons hunk (nreverse lines)) result))))
@@ -1179,23 +1325,27 @@ Return alist of (hunk . lines-to-render)."
 
 (defun rere--insert-single-line (dl)
   "Insert a single diff line DL with proper face and word refinement."
-  (let* ((type (rere-diff-line-type dl))
-         (face (pcase type
-                 ('added 'magit-diff-added)
-                 ('removed 'magit-diff-removed)
-                 ('context 'magit-diff-context)
-                 (_ 'default)))
-         (hl-face (when rere-refine-highlight
-                    (pcase type
-                      ('added (rere--added-highlight-face))
-                      ('removed (rere--removed-highlight-face)))))
+  (let* ((flagged (rere--flagged-p dl))
+         (type (rere-diff-line-type dl))
+         (face (cond
+                (flagged 'rere-flagged-line)
+                ((eq type 'added) 'magit-diff-added)
+                ((eq type 'removed) 'magit-diff-removed)
+                ((eq type 'context) 'magit-diff-context)
+                (t 'default)))
+         (hl-face (unless flagged
+                    (when rere-refine-highlight
+                      (pcase type
+                        ('added (rere--added-highlight-face))
+                        ('removed (rere--removed-highlight-face))))))
          (prefix (pcase type
                    ('added "+")
                    ('removed "-")
                    (_ " ")))
          (content (rere-diff-line-content dl))
-         (highlights (when rere-refine-highlight
-                       (rere-diff-line-highlights dl)))
+         (highlights (unless flagged
+                       (when rere-refine-highlight
+                         (rere-diff-line-highlights dl))))
          (hash (rere-diff-line-hash dl))
          (reviewable (rere--reviewable-p dl))
          (pending (rere--pending-p dl)))
@@ -1208,7 +1358,8 @@ Return alist of (hunk . lines-to-render)."
                           rere-line-hash ,hash
                           rere-diff-line ,dl
                           ,@(when reviewable '(rere-reviewable t))
-                          ,@(when pending '(rere-pending t))))
+                          ,@(when pending '(rere-pending t))
+                          ,@(when flagged '(rere-flagged t))))
         (when (and hl-face highlights)
           (let ((offset (+ beg 3)))
             (dolist (hl highlights)
@@ -1219,7 +1370,8 @@ Return alist of (hunk . lines-to-render)."
 (defun rere--insert-footer ()
   "Insert footer with keybinding hints."
   (when (and (> rere--total-lines 0)
-             (= rere--reviewed-count rere--total-lines))
+             (= rere--reviewed-count rere--total-lines)
+             (zerop (rere--flagged-count)))
     (insert
      (propertize
       (concat "\n100% reviewed! Press 'q' to return, "
@@ -1228,8 +1380,8 @@ Return alist of (hunk . lines-to-render)."
   (insert
    (propertize
     (concat "\n"
-            "s accept  u undo  "
-            "n/p diff  [/] file  TAB toggle  "
+            "s accept  u undo  m/M flag  f focus  c context\n"
+            "n/p diff  [/] file  {/} pending file  TAB toggle  "
             "RET edit  r refresh  q quit\n")
     'font-lock-face 'magit-dimmed)))
 
@@ -1435,7 +1587,7 @@ Move items back from Reviewed to Pending."
 
 (defun rere-toggle-section ()
   "Toggle section visibility.
-If on Pending or Reviewed header, toggle that category.
+If on Pending, Stinky, or Reviewed header, toggle that category.
 If on a hunk header, toggle that hunk.
 If on a file header or diff line, toggle that file."
   (interactive)
@@ -1444,7 +1596,8 @@ If on a file header or diff line, toggle that file."
       (user-error "[rere] No section at point"))
     (let ((target-sec
            (cond
-            ((memq (oref sec type) '(rere-pending rere-reviewed))
+            ((memq (oref sec type)
+                   '(rere-pending rere-reviewed rere-stinky))
              sec)
             ((eq (oref sec type) 'rere-hunk-section)
              sec)
@@ -1460,6 +1613,92 @@ If on a file header or diff line, toggle that file."
                  (oref target-sec content)
                  (> (point) (oref target-sec content)))
         (goto-char (oref target-sec start))))))
+
+(defun rere-toggle-focus ()
+  "Toggle focus mode on the file at point.
+When active, only changes for this file are displayed.
+Pressing 'f' again restores the full view."
+  (interactive)
+  (if rere--focused-file
+      (progn
+        (setq rere--focused-file nil)
+        (rere--render-buffer)
+        (message "[rere] Focus cleared. Showing all files."))
+    (let* ((dl (rere--section-diff-line))
+           (file-diff (rere--section-file))
+           (filename (cond
+                      (dl (rere-diff-line-file dl))
+                      (file-diff (rere-file-diff-filename file-diff))
+                      (t nil))))
+      (unless filename
+        (user-error "[rere] No file at point to focus"))
+      (setq rere--focused-file filename)
+      (rere--render-buffer)
+      (message "[rere] Focused on %s. Press 'f' to unfocus." filename))))
+
+(defun rere-toggle-context ()
+  "Toggle visibility of context lines in diff hunks."
+  (interactive)
+  (setq rere--show-context (not rere--show-context))
+  (rere--render-buffer)
+  (message "[rere] Context lines %s."
+           (if rere--show-context "shown" "hidden")))
+
+(defun rere-toggle-flag ()
+  "Toggle flag on diff line at point or in active region.
+Flagged lines move to the 'Stinky changes' section and must be
+resolved before 100% review can be reached."
+  (interactive)
+  (let* ((in-visual (and (bound-and-true-p evil-mode)
+                         (evil-visual-state-p)))
+         (has-region (or in-visual (use-region-p)))
+         (lines (if has-region
+                    (cl-remove-if-not
+                     #'rere--reviewable-p
+                     (rere--region-elements
+                      (region-beginning) (region-end)))
+                  (when-let* ((dl (rere--section-diff-line)))
+                    (when (rere--reviewable-p dl)
+                      (list dl))))))
+    (when in-visual (evil-normal-state))
+    (when has-region (deactivate-mark))
+    (unless lines
+      (user-error "[rere] No reviewable diff line at point"))
+    (let* ((all-flagged (cl-every #'rere--flagged-p lines))
+           (target-hash (rere-diff-line-hash (car lines))))
+      (dolist (dl lines)
+        (if all-flagged
+            (rere--unflag-line dl)
+          (rere--flag-line dl)))
+      (rere--schedule-save-reviewed-state)
+      (rere--render-buffer target-hash)
+      (message "[rere] %s %d line(s)."
+               (if all-flagged "Unflagged" "Flagged")
+               (length lines)))))
+
+(defun rere-next-flagged ()
+  "Jump to the next flagged (stinky) diff line."
+  (interactive)
+  (let ((found nil)
+        (orig (point)))
+    (save-excursion
+      (forward-line 1)
+      (while (and (not found) (not (eobp)))
+        (if (and (get-text-property (point) 'rere-flagged)
+                 (not (invisible-p (point))))
+            (setq found (point))
+          (forward-line 1))))
+    (unless found
+      (save-excursion
+        (goto-char (point-min))
+        (while (and (not found) (< (point) orig))
+          (if (and (get-text-property (point) 'rere-flagged)
+                   (not (invisible-p (point))))
+              (setq found (point))
+            (forward-line 1)))))
+    (if found
+        (goto-char found)
+      (message "[rere] No flagged lines found"))))
 
 (defun rere-next-diff-line ()
   "Move point to next reviewable diff line, skipping context."
@@ -1543,6 +1782,58 @@ If on a file header or diff line, toggle that file."
       (message "[rere] No previous files above")
       (goto-char orig))))
 
+(defun rere-next-pending-file ()
+  "Move point to next file heading with pending changes."
+  (interactive)
+  (let ((found nil)
+        (orig (point))
+        (cur-end (line-end-position)))
+    (save-excursion
+      (forward-line 1)
+      (while (and (not found) (not (eobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((s section))
+              (while (and s (not (eq (oref s type) 'rere-file-section)))
+                (setq s (oref s parent)))
+              (when (and s (> (oref s start) cur-end))
+                (let ((file-diff (oref s value)))
+                  (when (and (rere-file-diff-p file-diff)
+                             (rere--file-has-pending-p file-diff))
+                    (setq found (oref s start))))))))
+        (unless found
+          (forward-line 1))))
+    (if found
+        (goto-char found)
+      (message "[rere] No further pending files below")
+      (goto-char orig))))
+
+(defun rere-previous-pending-file ()
+  "Move point to previous file heading with pending changes."
+  (interactive)
+  (let ((found nil)
+        (orig (point))
+        (cur-beg (line-beginning-position)))
+    (save-excursion
+      (forward-line -1)
+      (while (and (not found) (not (bobp)))
+        (unless (invisible-p (point))
+          (when-let* ((section (magit-current-section)))
+            (let ((s section))
+              (while (and s (not (eq (oref s type) 'rere-file-section)))
+                (setq s (oref s parent)))
+              (when (and s (< (oref s start) cur-beg))
+                (let ((file-diff (oref s value)))
+                  (when (and (rere-file-diff-p file-diff)
+                             (rere--file-has-pending-p file-diff))
+                    (setq found (oref s start))))))))
+        (unless found
+          (forward-line -1))))
+    (if found
+        (goto-char found)
+      (message "[rere] No previous pending files above")
+      (goto-char orig))))
+
 (defun rere-open-file ()
   "Open the source file at the diff line or file heading at point."
   (interactive)
@@ -1577,27 +1868,32 @@ If on a file header or diff line, toggle that file."
     "git rev-parse --show-toplevel")))
 
 (defun rere-refresh ()
-  "Refresh the diff, preserving reviewed state.
+  "Refresh the diff, preserving reviewed and flagged state.
 Lines that were reviewed and still exist unchanged
-remain in Reviewed.  New or modified lines appear in
-Pending."
+remain in Reviewed.  Flagged lines remain in Stinky changes.
+New or modified lines appear in Pending."
   (interactive)
   (let ((old-reviewed
-         (copy-hash-table rere--reviewed)))
+         (copy-hash-table rere--reviewed))
+        (old-flagged
+         (and rere--flagged (copy-hash-table rere--flagged))))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
-    ;; rebuild reviewed set:
+    ;; rebuild reviewed and flagged sets:
     ;; keep only hashes that still exist in the new diff
     (clrhash rere--reviewed)
+    (when old-flagged
+      (clrhash rere--flagged))
     (dolist (file rere--diff-files)
       (dolist (hunk (rere-file-diff-hunks file))
         (dolist (dl (rere-hunk-lines hunk))
-          (when (and (rere--reviewable-p dl)
-                     (gethash
-                      (rere-diff-line-hash dl)
-                      old-reviewed))
-            (puthash (rere-diff-line-hash dl)
-                     t rere--reviewed)))))
+          (when (rere--reviewable-p dl)
+            (let ((h (rere-diff-line-hash dl)))
+              (cond
+               ((and old-flagged (gethash h old-flagged))
+                (puthash h t rere--flagged))
+               ((gethash h old-reviewed)
+                (puthash h t rere--reviewed))))))))
     (rere--count-lines)
     (rere--save-reviewed-state-now)
     (setq rere--diffstat-cache nil)
@@ -1632,16 +1928,47 @@ Pending."
     (define-key map (kbd "p") #'rere-previous-diff-line)
     (define-key map (kbd "]") #'rere-next-file)
     (define-key map (kbd "[") #'rere-previous-file)
+    (define-key map (kbd "}") #'rere-next-pending-file)
+    (define-key map (kbd "{") #'rere-previous-pending-file)
+    (define-key map (kbd "f") #'rere-toggle-focus)
+    (define-key map (kbd "c") #'rere-toggle-context)
+    (define-key map (kbd "m") #'rere-toggle-flag)
+    (define-key map (kbd "M") #'rere-next-flagged)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
 
 ;;;; Evil integration
 
+(defun rere--setup-evil-buffer ()
+  "Install buffer-local Evil overrides so global maps do not steal keys."
+  (when (fboundp 'evil-local-set-key)
+    (dolist (state '(normal motion))
+      (evil-local-set-key state (kbd "[") #'rere-previous-file)
+      (evil-local-set-key state (kbd "]") #'rere-next-file)
+      (evil-local-set-key state (kbd "{") #'rere-previous-pending-file)
+      (evil-local-set-key state (kbd "}") #'rere-next-pending-file)
+      (evil-local-set-key state (kbd "f") #'rere-toggle-focus)
+      (evil-local-set-key state (kbd "c") #'rere-toggle-context)
+      (evil-local-set-key state (kbd "m") #'rere-toggle-flag)
+      (evil-local-set-key state (kbd "M") #'rere-next-flagged)
+      (evil-local-set-key state (kbd "s") #'rere-smart-accept)
+      (evil-local-set-key state (kbd "S") #'rere-smart-accept)
+      (evil-local-set-key state (kbd "u") #'rere-unaccept)
+      (evil-local-set-key state (kbd "r") #'rere-refresh)
+      (evil-local-set-key state (kbd "q") #'rere-quit)
+      (evil-local-set-key state (kbd "RET") #'rere-open-file)
+      (evil-local-set-key state (kbd "TAB") #'rere-toggle-section)
+      (evil-local-set-key state (kbd "<tab>") #'rere-toggle-section)
+      (evil-local-set-key state (kbd "n") #'rere-next-diff-line)
+      (evil-local-set-key state (kbd "p") #'rere-previous-diff-line))
+    (evil-local-set-key 'visual (kbd "s") #'rere-smart-accept)
+    (evil-local-set-key 'visual (kbd "S") #'rere-smart-accept)
+    (evil-local-set-key 'visual (kbd "u") #'rere-unaccept)
+    (evil-local-set-key 'visual (kbd "m") #'rere-toggle-flag)))
+
 (defun rere--setup-evil ()
-  "Set up Evil keybindings for `rere-mode'.
-Bind review keys in normal and visual states so Evil does not
-shadow them."
+  "Set up Evil keybindings for `rere-mode'."
   (when (bound-and-true-p evil-mode)
     (evil-set-initial-state 'rere-mode 'normal)
     (evil-define-key 'normal rere-mode-map
@@ -1657,12 +1984,19 @@ shadow them."
       (kbd "p") #'rere-previous-diff-line
       (kbd "]") #'rere-next-file
       (kbd "[") #'rere-previous-file
+      (kbd "}") #'rere-next-pending-file
+      (kbd "{") #'rere-previous-pending-file
+      (kbd "f") #'rere-toggle-focus
+      (kbd "c") #'rere-toggle-context
+      (kbd "m") #'rere-toggle-flag
+      (kbd "M") #'rere-next-flagged
       (kbd "g g") #'beginning-of-buffer
       (kbd "G") #'end-of-buffer)
     (evil-define-key 'visual rere-mode-map
       (kbd "s") #'rere-smart-accept
       (kbd "S") #'rere-smart-accept
-      (kbd "u") #'rere-unaccept)))
+      (kbd "u") #'rere-unaccept
+      (kbd "m") #'rere-toggle-flag)))
 
 (with-eval-after-load 'evil
   (rere--setup-evil))
@@ -1680,7 +2014,9 @@ shadow them."
   (setq-local magit-section-inhibit-markers t)
   (add-hook 'kill-buffer-hook #'rere--save-reviewed-state-now nil t)
   (setq-local revert-buffer-function
-              (lambda (&rest _) (rere-refresh))))
+              (lambda (&rest _) (rere-refresh)))
+  (when (fboundp 'evil-local-set-key)
+    (rere--setup-evil-buffer)))
 
 ;;;; Entry point
 
@@ -1705,7 +2041,8 @@ Only works during an interactive git rebase."
            (new-sha (plist-get new-info :sha)))
       (rere--cleanup-old-reviewed-states new-sha)
       (setq rere--commit-info new-info)
-      (setq rere--reviewed (rere--load-reviewed-state)))
+      (setq rere--reviewed (rere--load-reviewed-state))
+      (setq rere--flagged (rere--load-flagged-state)))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
     (setq rere--diffstat-cache nil)
