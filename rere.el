@@ -38,7 +38,7 @@
 ;;
 ;; Key bindings:
 ;;   s / S - smart accept (category/file/hunk/line)
-;;   u     - undo accept (move back to Pending)
+;;   u     - smart undo (file/hunk/line)
 ;;   n / p - jump to next/previous diff line
 ;;   ] / [ - jump to next/previous file
 ;;   RET   - open source file at diff line
@@ -1591,50 +1591,79 @@ On a diff line, accept that line."
           (rere--accept-line dl))
         (rere--render-buffer target-hash)))))
 
+(defun rere--non-pending-p (diff-line)
+  "Return non-nil if DIFF-LINE is reviewed or flagged (not pending)."
+  (and (rere--reviewable-p diff-line)
+       (or (rere--reviewed-p diff-line)
+           (rere--flagged-p diff-line))))
+
 (defun rere-unaccept ()
-  "Undo acceptance of region, category, line, hunk, or file at point.
-Move items back from Reviewed to Pending."
+  "Smart undo: move reviewed or flagged lines back to Pending.
+Works context-sensitively on the element under the cursor:
+- Visual region: undo all reviewed/flagged lines in region.
+- Diff line: undo that single line.
+- Hunk heading: undo all reviewed/flagged lines in that hunk.
+- File heading: undo all reviewed/flagged lines in that file.
+Without a specific line, hunk, or file under the cursor, does nothing."
   (interactive)
   (let* ((in-visual (and (bound-and-true-p evil-mode)
                          (evil-visual-state-p)))
          (has-region (or in-visual (use-region-p)))
-         (to-unaccept nil))
-    (if has-region
-        (progn
-          (setq to-unaccept
-                (cl-remove-if-not
-                 #'rere--reviewed-p
-                 (rere--region-elements
-                  (region-beginning) (region-end))))
-          (when in-visual
-            (evil-normal-state))
-          (deactivate-mark))
-      (when-let* ((section (magit-current-section)))
-        (let ((val (oref section value)))
-          (setq to-unaccept
-                (cond
-                 ((eq (oref section type) 'rere-reviewed)
-                  (rere--reviewed-diff-lines))
-                 ((rere-diff-line-p val)
-                  (when (rere--reviewed-p val)
-                    (list val)))
-                 ((rere-hunk-p val)
-                  (cl-remove-if-not
-                   #'rere--reviewed-p
-                   (copy-sequence (rere-hunk-lines val))))
-                 ((rere-file-diff-p val)
-                  (cl-remove-if-not
-                   #'rere--reviewed-p
-                   (cl-mapcan
-                    (lambda (h)
-                      (copy-sequence (rere-hunk-lines h)))
-                    (rere-file-diff-hunks val))))
-                 (t nil))))))
-    (unless to-unaccept
-      (user-error "[rere] No reviewed changes to unaccept"))
-    (let ((target-hash
-           (rere--find-next-target to-unaccept (rere--reviewed-diff-lines))))
-      (dolist (dl to-unaccept)
+         (to-undo nil))
+    (cond
+     (has-region
+      (setq to-undo
+            (cl-remove-if-not
+             #'rere--non-pending-p
+             (rere--region-elements
+              (region-beginning) (region-end))))
+      (when in-visual
+        (evil-normal-state))
+      (deactivate-mark))
+     ;; diff line under cursor
+     ((when-let* ((dl (rere--section-diff-line)))
+        (when (rere--non-pending-p dl)
+          (setq to-undo (list dl))
+          t)))
+     ;; hunk heading
+     ((when-let* ((hunk (rere--section-hunk)))
+        (let ((found (cl-remove-if-not
+                      #'rere--non-pending-p
+                      (copy-sequence (rere-hunk-lines hunk)))))
+          (when found
+            (setq to-undo found)
+            t))))
+     ;; file heading
+     ((when-let* ((file-diff (rere--section-file)))
+        (let ((found (cl-remove-if-not
+                      #'rere--non-pending-p
+                      (cl-mapcan
+                       (lambda (h)
+                         (copy-sequence (rere-hunk-lines h)))
+                       (rere-file-diff-hunks file-diff)))))
+          (when found
+            (setq to-undo found)
+            t))))
+     (t
+      (user-error
+       "[rere] No reviewed or flagged changes under cursor")))
+    (unless to-undo
+      (user-error
+       "[rere] No reviewed or flagged changes to undo"))
+    ;; separate into reviewed and flagged for proper undo
+    (let ((target-hash nil))
+      ;; find next target from whichever list contains items
+      (let ((reviewed-items (cl-remove-if-not #'rere--reviewed-p to-undo))
+            (flagged-items (cl-remove-if-not #'rere--flagged-p to-undo)))
+        (when reviewed-items
+          (setq target-hash
+                (rere--find-next-target
+                 reviewed-items (rere--reviewed-diff-lines))))
+        (when (and (not target-hash) flagged-items)
+          (setq target-hash
+                (rere--find-next-target
+                 flagged-items (rere--flagged-diff-lines)))))
+      (dolist (dl to-undo)
         (rere--unaccept-line dl))
       (rere--schedule-save-reviewed-state)
       (rere--render-buffer target-hash))))
