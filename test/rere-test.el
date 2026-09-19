@@ -246,6 +246,57 @@ index 0000000..1111111 100644
     (rere-unaccept)
     (should (= rere--reviewed-count 0))))
 
+(ert-deftest rere-test-unaccept-stinky-category ()
+  "Unaccept on Stinky changes heading restores all flagged lines to pending."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--flagged (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (rere--goto-first-pending)
+    (rere-toggle-flag)
+    (should (= (rere--flagged-count) 1))
+    (goto-char (point-min))
+    (search-forward "Stinky changes")
+    (rere-unaccept)
+    (should (= (rere--flagged-count) 0))))
+
+(ert-deftest rere-test-unaccept-on-pending-errors ()
+  "Unaccept on a pending diff line or Pending heading signals user-error."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (rere--render-buffer)
+    ;; on pending heading
+    (goto-char (point-min))
+    (search-forward "Pending review")
+    (should-error (rere-unaccept) :type 'user-error)
+    ;; on pending line
+    (rere--goto-first-pending)
+    (should-error (rere-unaccept) :type 'user-error)))
+
+(ert-deftest rere-test-unaccept-file ()
+  "Unaccept on a file heading in Reviewed changes restores file to pending."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    ;; accept all lines
+    (dolist (file rere--diff-files)
+      (rere--accept-file-lines file))
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (search-forward "Reviewed changes")
+    ;; expand reviewed section
+    (rere-toggle-section)
+    (search-forward "modified   foo.el")
+    (rere-unaccept)
+    ;; foo.el had 3 lines, bar.el has 1
+    (should (= rere--reviewed-count 1))))
+
 ;;;; Counting tests
 
 (ert-deftest rere-test-count-lines ()

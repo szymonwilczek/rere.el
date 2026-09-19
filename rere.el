@@ -38,7 +38,7 @@
 ;;
 ;; Key bindings:
 ;;   s / S - smart accept (category/file/hunk/line)
-;;   u     - smart undo (file/hunk/line)
+;;   u     - smart undo (category/file/hunk/line)
 ;;   n / p - jump to next/previous diff line
 ;;   ] / [ - jump to next/previous file
 ;;   RET   - open source file at diff line
@@ -1604,7 +1604,9 @@ Works context-sensitively on the element under the cursor:
 - Diff line: undo that single line.
 - Hunk heading: undo all reviewed/flagged lines in that hunk.
 - File heading: undo all reviewed/flagged lines in that file.
-Without a specific line, hunk, or file under the cursor, does nothing."
+- Category heading: on Reviewed changes, undo all reviewed lines;
+  on Stinky changes, unflag all flagged lines.
+Without a valid element under the cursor, signals an error."
   (interactive)
   (let* ((in-visual (and (bound-and-true-p evil-mode)
                          (evil-visual-state-p)))
@@ -1622,31 +1624,33 @@ Without a specific line, hunk, or file under the cursor, does nothing."
       (deactivate-mark))
      ;; diff line under cursor
      ((when-let* ((dl (rere--section-diff-line)))
-        (when (rere--non-pending-p dl)
-          (setq to-undo (list dl))
-          t)))
-     ;; hunk heading
-     ((when-let* ((hunk (rere--section-hunk)))
-        (let ((found (cl-remove-if-not
-                      #'rere--non-pending-p
-                      (copy-sequence (rere-hunk-lines hunk)))))
-          (when found
-            (setq to-undo found)
-            t))))
-     ;; file heading
-     ((when-let* ((file-diff (rere--section-file)))
-        (let ((found (cl-remove-if-not
-                      #'rere--non-pending-p
-                      (cl-mapcan
-                       (lambda (h)
-                         (copy-sequence (rere-hunk-lines h)))
-                       (rere-file-diff-hunks file-diff)))))
-          (when found
-            (setq to-undo found)
-            t))))
+        (if (rere--non-pending-p dl)
+            (setq to-undo (list dl))
+          (user-error "[rere] Line at point is not reviewed or flagged"))
+        t))
+     ;; Magit section under cursor
      (t
-      (user-error
-       "[rere] No reviewed or flagged changes under cursor")))
+      (when-let* ((section (magit-current-section)))
+        (let ((type (oref section type))
+              (val (oref section value)))
+          (cond
+           ((eq type 'rere-reviewed)
+            (setq to-undo (rere--reviewed-diff-lines)))
+           ((eq type 'rere-stinky)
+            (setq to-undo (rere--flagged-diff-lines)))
+           ((rere-hunk-p val)
+            (setq to-undo
+                  (cl-remove-if-not
+                   #'rere--non-pending-p
+                   (copy-sequence (rere-hunk-lines val)))))
+           ((rere-file-diff-p val)
+            (setq to-undo
+                  (cl-remove-if-not
+                   #'rere--non-pending-p
+                   (cl-mapcan
+                    (lambda (h)
+                      (copy-sequence (rere-hunk-lines h)))
+                    (rere-file-diff-hunks val))))))))))
     (unless to-undo
       (user-error
        "[rere] No reviewed or flagged changes to undo"))
