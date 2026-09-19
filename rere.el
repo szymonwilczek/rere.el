@@ -162,7 +162,8 @@
     (let ((file (expand-file-name
                  (format "rere-reviewed-%s" sha)
                  rebase-dir))
-          (hashes '()))
+          (hashes '())
+          (write-region-inhibit-fsync t))
       (when rere--reviewed
         (maphash (lambda (k _v) (push k hashes))
                  rere--reviewed))
@@ -539,14 +540,15 @@ Only added and removed lines are reviewable."
 (defun rere--count-lines ()
   "Count total and reviewed lines, update state."
   (setq rere--total-lines 0)
-  (setq rere--reviewed-count 0)
   (dolist (file rere--diff-files)
     (dolist (hunk (rere-file-diff-hunks file))
       (dolist (dl (rere-hunk-lines hunk))
         (when (rere--reviewable-p dl)
-          (cl-incf rere--total-lines)
-          (when (rere--reviewed-p dl)
-            (cl-incf rere--reviewed-count)))))))
+          (cl-incf rere--total-lines)))))
+  (setq rere--reviewed-count
+        (if rere--reviewed
+            (hash-table-count rere--reviewed)
+          0)))
 
 ;;;; Review operations
 
@@ -627,8 +629,9 @@ Expands any hunks or file sections intersecting the region."
 (defun rere--find-next-target (to-remove all-lines)
   "Find hash of the line to focus after removing TO-REMOVE from ALL-LINES."
   (when (and to-remove all-lines)
-    (let* ((to-remove-hashes
-            (mapcar #'rere-diff-line-hash to-remove))
+    (let* ((to-remove-table (make-hash-table :test 'equal))
+           (_ (dolist (dl to-remove)
+                (puthash (rere-diff-line-hash dl) t to-remove-table)))
            (last-dl (car (last to-remove)))
            (first-dl (car to-remove))
            (tail (cdr (cl-member (rere-diff-line-hash last-dl)
@@ -638,8 +641,7 @@ Expands any hunks or file sections intersecting the region."
            (next-dl
             (cl-find-if-not
              (lambda (dl)
-               (member (rere-diff-line-hash dl)
-                       to-remove-hashes))
+               (gethash (rere-diff-line-hash dl) to-remove-table))
              tail)))
       (if next-dl
           (rere-diff-line-hash next-dl)
@@ -654,8 +656,8 @@ Expands any hunks or file sections intersecting the region."
                 (and head
                      (cl-find-if-not
                       (lambda (dl)
-                        (member (rere-diff-line-hash dl)
-                                to-remove-hashes))
+                        (gethash (rere-diff-line-hash dl)
+                                 to-remove-table))
                       (reverse head)))))
           (when prev-dl
             (rere-diff-line-hash prev-dl)))))))
@@ -707,21 +709,10 @@ Otherwise, try to preserve cursor position."
 (defun rere--goto-first-pending ()
   "Move point to the first pending reviewable diff line.
 Return t if found, nil otherwise."
-  (let ((found nil))
-    (save-excursion
-      (goto-char (point-min))
-      (while (and (not found) (not (eobp)))
-        (unless (invisible-p (point))
-          (when-let* ((section (magit-current-section)))
-            (let ((val (oref section value)))
-              (when (and (rere-diff-line-p val)
-                         (rere--pending-p val))
-                (setq found (point))))))
-        (unless found
-          (forward-line 1))))
-    (when found
-      (goto-char found)
-      t)))
+  (when-let* ((pos (text-property-any (point-min) (point-max)
+                                      'rere-pending t)))
+    (goto-char pos)
+    t))
 
 (defun rere--current-section-path ()
   "Return path identifier for current section."
@@ -738,23 +729,10 @@ Return t if found, nil otherwise."
 (defun rere--goto-line-hash (hash)
   "Move point to the line with HASH.  Return t if found."
   (when hash
-    (let ((pos nil))
-      (save-excursion
-        (goto-char (point-min))
-        (while (and (not pos) (not (eobp)))
-          (unless (invisible-p (point))
-            (when-let* ((section
-                         (magit-current-section)))
-              (let ((val (oref section value)))
-                (when (and (rere-diff-line-p val)
-                           (equal
-                            (rere-diff-line-hash val)
-                            hash))
-                  (setq pos (point))))))
-          (forward-line 1)))
-      (when pos
-        (goto-char pos)
-        t))))
+    (when-let* ((pos (text-property-any (point-min) (point-max)
+                                        'rere-line-hash hash)))
+      (goto-char pos)
+      t)))
 
 (defun rere--goto-section-path (path)
   "Move point to section identified by PATH.
@@ -871,19 +849,19 @@ MAX-LEN is the maximum filename display width."
              (max-len (min 35 (max 10 (apply #'max
                                              (mapcar #'length names))))))
         (dolist (file rere--diff-files)
-          (let* ((lines (cl-mapcan
-                         (lambda (h)
-                           (copy-sequence (rere-hunk-lines h)))
-                         (rere-file-diff-hunks file)))
-                 (reviewable (cl-remove-if-not #'rere--reviewable-p lines))
-                 (added (cl-count-if (lambda (l)
-                                       (eq (rere-diff-line-type l) 'added))
-                                     reviewable))
-                 (removed (cl-count-if (lambda (l)
-                                         (eq (rere-diff-line-type l) 'removed))
-                                       reviewable))
-                 (total (length reviewable))
-                 (reviewed (cl-count-if #'rere--reviewed-p reviewable)))
+          (let ((added 0)
+                (removed 0)
+                (reviewed 0)
+                (total 0))
+            (dolist (hunk (rere-file-diff-hunks file))
+              (dolist (dl (rere-hunk-lines hunk))
+                (when (rere--reviewable-p dl)
+                  (cl-incf total)
+                  (if (eq (rere-diff-line-type dl) 'added)
+                      (cl-incf added)
+                    (cl-incf removed))
+                  (when (rere--reviewed-p dl)
+                    (cl-incf reviewed)))))
             (magit-insert-section (rere-file-stat file nil)
               (insert
                (rere--format-file-diffstat
@@ -951,17 +929,17 @@ MAX-LEN is the maximum filename display width."
 Return alist of (hunk . lines-to-render)."
   (let ((result '()))
     (dolist (hunk (rere-file-diff-hunks file-diff))
-      (let ((has-matching
-             (cl-some pred (rere-hunk-lines hunk))))
+      (let ((lines '())
+            (has-matching nil))
+        (dolist (dl (rere-hunk-lines hunk))
+          (cond
+           ((funcall pred dl)
+            (setq has-matching t)
+            (push dl lines))
+           ((eq (rere-diff-line-type dl) 'context)
+            (push dl lines))))
         (when has-matching
-          (let ((lines
-                 (cl-remove-if-not
-                  (lambda (dl)
-                    (or (eq (rere-diff-line-type dl) 'context)
-                        (funcall pred dl)))
-                  (rere-hunk-lines hunk))))
-            (when lines
-              (push (cons hunk lines) result))))))
+          (push (cons hunk (nreverse lines)) result))))
     (nreverse result)))
 
 (defun rere--insert-single-line (dl)
@@ -980,23 +958,27 @@ Return alist of (hunk . lines-to-render)."
                    ('added "+")
                    ('removed "-")
                    (_ " ")))
-         (content (copy-sequence (rere-diff-line-content dl)))
+         (content (rere-diff-line-content dl))
          (highlights (when rere-refine-highlight
-                       (rere-diff-line-highlights dl))))
-    (put-text-property 0 (length content)
-                       'font-lock-face face content)
-    (when (and hl-face highlights)
-      (dolist (hl highlights)
-        (put-text-property (car hl) (cdr hl)
-                           'font-lock-face hl-face
-                           content)))
-    (let ((text (concat
-                 (propertize (format "  %s" prefix)
-                             'font-lock-face face)
-                 content
-                 (propertize "\n" 'font-lock-face face))))
-      (magit-insert-section (rere-line dl)
-        (insert text)))))
+                       (rere-diff-line-highlights dl)))
+         (hash (rere-diff-line-hash dl))
+         (reviewable (rere--reviewable-p dl))
+         (pending (rere--pending-p dl)))
+    (magit-insert-section (rere-line dl)
+      (let ((beg (point)))
+        (insert "  " prefix content "\n")
+        (put-text-property beg (point) 'font-lock-face face)
+        (put-text-property beg (point) 'rere-line-hash hash)
+        (when reviewable
+          (put-text-property beg (point) 'rere-reviewable t))
+        (when pending
+          (put-text-property beg (point) 'rere-pending t))
+        (when (and hl-face highlights)
+          (let ((offset (+ beg 3)))
+            (dolist (hl highlights)
+              (put-text-property (+ offset (car hl))
+                                 (+ offset (cdr hl))
+                                 'font-lock-face hl-face))))))))
 
 (defun rere--insert-footer ()
   "Insert footer with keybinding hints."
@@ -1191,13 +1173,9 @@ If on a file header or diff line, toggle that file."
     (save-excursion
       (forward-line 1)
       (while (and (not found) (not (eobp)))
-        (unless (invisible-p (point))
-          (when-let* ((section (magit-current-section)))
-            (let ((val (oref section value)))
-              (when (and (rere-diff-line-p val)
-                         (rere--reviewable-p val))
-                (setq found (point))))))
-        (unless found
+        (if (and (get-text-property (point) 'rere-reviewable)
+                 (not (invisible-p (point))))
+            (setq found (point))
           (forward-line 1))))
     (if found
         (goto-char found)
@@ -1212,13 +1190,9 @@ If on a file header or diff line, toggle that file."
     (save-excursion
       (forward-line -1)
       (while (and (not found) (not (bobp)))
-        (unless (invisible-p (point))
-          (when-let* ((section (magit-current-section)))
-            (let ((val (oref section value)))
-              (when (and (rere-diff-line-p val)
-                         (rere--reviewable-p val))
-                (setq found (point))))))
-        (unless found
+        (if (and (get-text-property (point) 'rere-reviewable)
+                 (not (invisible-p (point))))
+            (setq found (point))
           (forward-line -1))))
     (if found
         (goto-char found)
