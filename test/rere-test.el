@@ -688,6 +688,42 @@ index 0000000..1111111 100644
       (should (eq (get-text-property 16 'font-lock-face)
                   (rere--added-highlight-face))))))
 
+(ert-deftest rere-test-diff-word-ranges-low-similarity ()
+  "Completely different lines should not compute word highlights."
+  (let* ((s1 "  (delete-process gh-radar-process--notifications)")
+         (s2 "  (if force")
+         (ranges (rere--diff-word-ranges s1 s2)))
+    (should (null (car ranges)))
+    (should (null (cdr ranges)))))
+
+(ert-deftest rere-test-refine-hunk-pure-addition ()
+  "Hunk with only additions should not compute word highlights."
+  (let* ((raw (concat "diff --git a/test.el b/test.el\n"
+                      "--- a/test.el\n"
+                      "+++ b/test.el\n"
+                      "@@ -1,0 +1,3 @@\n"
+                      "+(defun new-func ())\n"
+                      "+  (message \"hello\"))\n"))
+         (files (rere--parse-diff raw))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (rere-hunk-lines hunk)))
+    (dolist (line lines)
+      (should (null (rere-diff-line-highlights line))))))
+
+(ert-deftest rere-test-refine-hunk-pure-removal ()
+  "Hunk with only removals should not compute word highlights."
+  (let* ((raw (concat "diff --git a/test.el b/test.el\n"
+                      "--- a/test.el\n"
+                      "+++ b/test.el\n"
+                      "@@ -1,3 +1,0 @@\n"
+                      "-(defun old-func ())\n"
+                      "-  (message \"bye\"))\n"))
+         (files (rere--parse-diff raw))
+         (hunk (car (rere-file-diff-hunks (car files))))
+         (lines (rere-hunk-lines hunk)))
+    (dolist (line lines)
+      (should (null (rere-diff-line-highlights line))))))
+
 ;;;; Diffstat tests
 
 (ert-deftest rere-test-diffstat-graph ()
