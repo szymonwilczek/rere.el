@@ -806,16 +806,20 @@ MAX-WIDTH is the maximum length of the +/- bar."
                  'font-lock-face 'magit-diff-removed))))
 
 (defun rere--format-file-diffstat (filename added removed reviewed total
-                                            max-len)
+                                            max-len &optional max-digits)
   "Format a single file diffstat line for FILENAME.
 ADDED, REMOVED, REVIEWED, and TOTAL are line counts.
-MAX-LEN is the maximum filename display width."
+MAX-LEN is the maximum filename display width.
+MAX-DIGITS is the maximum width of the total diff count column."
   (let* ((disp-fn (if (> (length filename) 35)
                       (concat "..." (substring filename
                                                (- (length filename) 32)))
                     filename))
          (padding (make-string (max 0 (- max-len (length disp-fn))) ?\s))
          (tot-diff (+ added removed))
+         (digits (or max-digits
+                     (length (number-to-string tot-diff))))
+         (num-fmt (format "%%-%dd " digits))
          (graph (rere--diffstat-graph added removed 15))
          (rev-part (if (= reviewed total)
                        (propertize (format "  [%d/%d]" reviewed total)
@@ -826,7 +830,7 @@ MAX-LEN is the maximum filename display width."
                         'font-lock-face 'magit-diff-file-heading)
             padding
             (propertize " | " 'font-lock-face 'magit-dimmed)
-            (propertize (format "%2d " tot-diff)
+            (propertize (format num-fmt tot-diff)
                         'font-lock-face 'magit-dimmed)
             graph
             rev-part
@@ -847,26 +851,36 @@ MAX-LEN is the maximum filename display width."
                                   fn)))
                             rere--diff-files))
              (max-len (min 35 (max 10 (apply #'max
-                                             (mapcar #'length names))))))
-        (dolist (file rere--diff-files)
-          (let ((added 0)
-                (removed 0)
-                (reviewed 0)
-                (total 0))
-            (dolist (hunk (rere-file-diff-hunks file))
-              (dolist (dl (rere-hunk-lines hunk))
-                (when (rere--reviewable-p dl)
-                  (cl-incf total)
-                  (if (eq (rere-diff-line-type dl) 'added)
-                      (cl-incf added)
-                    (cl-incf removed))
-                  (when (rere--reviewed-p dl)
-                    (cl-incf reviewed)))))
+                                             (mapcar #'length names)))))
+             (file-stats
+              (mapcar
+               (lambda (file)
+                 (let ((added 0)
+                       (removed 0)
+                       (reviewed 0)
+                       (total 0))
+                   (dolist (hunk (rere-file-diff-hunks file))
+                     (dolist (dl (rere-hunk-lines hunk))
+                       (when (rere--reviewable-p dl)
+                         (cl-incf total)
+                         (if (eq (rere-diff-line-type dl) 'added)
+                             (cl-incf added)
+                           (cl-incf removed))
+                         (when (rere--reviewed-p dl)
+                           (cl-incf reviewed)))))
+                   (list file added removed reviewed total (+ added removed))))
+               rere--diff-files))
+             (max-digits
+              (apply #'max (mapcar (lambda (s)
+                                     (length (number-to-string (nth 5 s))))
+                                   file-stats))))
+        (dolist (stat file-stats)
+          (pcase-let ((`(,file ,added ,removed ,reviewed ,total ,_) stat))
             (magit-insert-section (rere-file-stat file nil)
               (insert
                (rere--format-file-diffstat
                 (rere-file-diff-filename file)
-                added removed reviewed total max-len))))))
+                added removed reviewed total max-len max-digits))))))
       (insert "\n"))))
 
 (defun rere--insert-pending-section ()

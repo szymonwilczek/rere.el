@@ -746,6 +746,13 @@ index 0000000..1111111 100644
     (should (eq (get-text-property 3 'font-lock-face g)
                 'magit-diff-removed))))
 
+(ert-deftest rere-test-diffstat-left-aligned-numbers ()
+  "Diffstat numbers are left-aligned and graphs align to first plus."
+  (let ((s1 (rere--format-file-diffstat "foo.el" 1 1 0 2 10 3))
+        (s2 (rere--format-file-diffstat "bar.el" 200 78 0 278 10 3)))
+    (should (string-match-p "| 2   \\+-" (substring-no-properties s1)))
+    (should (string-match-p "| 278 \\+" (substring-no-properties s2)))))
+
 (ert-deftest rere-test-diffstat-section-rendered ()
   "Buffer rendering includes Files changed section."
   (with-temp-buffer
