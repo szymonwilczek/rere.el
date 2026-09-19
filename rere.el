@@ -573,6 +573,178 @@ Only added and removed lines are reviewable."
             (hash-table-count rere--reviewed)
           0)))
 
+;;;; In-place buffer patching
+
+(defun rere--patch-accept-lines (lines)
+  "Accept LINES in-place without full buffer rebuild.
+Hide accepted lines with invisible overlays, update
+heading counters and diffstat, and move cursor to the
+next pending line.  Returns t if patch was performed."
+  (let ((inhibit-read-only t))
+    ;; 1) mark in hash table
+    (dolist (dl lines)
+      (rere--accept-line dl))
+    ;; 2) update counts
+    (setq rere--reviewed-count
+          (hash-table-count rere--reviewed))
+    ;; 3) hide lines and clear pending property
+    (dolist (dl lines)
+      (let ((hash (rere-diff-line-hash dl)))
+        (rere--patch-hide-line hash)))
+    ;; 4) update headings in-place
+    (rere--patch-update-headings)
+    ;; 5) update diffstat reviewed counts
+    (rere--patch-update-diffstat lines)
+    ;; 6) move to next pending line
+    (let ((next (save-excursion
+                  (forward-line 1)
+                  (text-property-any
+                   (point) (point-max)
+                   'rere-pending t))))
+      (if next
+          (goto-char next)
+        ;; try backward
+        (let ((prev (save-excursion
+                      (rere--patch-find-prev-pending))))
+          (if prev
+              (goto-char prev)
+            (rere--goto-first-pending)
+            (unless (get-text-property
+                     (point) 'rere-pending)
+              (rere--goto-pending-section))))))
+    ;; 7) check 100%
+    (when (and (> rere--total-lines 0)
+               (= rere--reviewed-count
+                  rere--total-lines))
+      (rere--render-buffer)
+      (message
+       "[rere] 100%% reviewed! \
+Press 'q' to return, then continue in Magit."))
+    t))
+
+(defun rere--patch-hide-line (hash)
+  "Hide the buffer line with HASH using an invisible overlay."
+  (when-let* ((pos (text-property-any
+                    (point-min) (point-max)
+                    'rere-line-hash hash)))
+    (save-excursion
+      (goto-char pos)
+      (let* ((beg (line-beginning-position))
+             (end (line-beginning-position 2))
+             (ov (make-overlay beg end nil t nil)))
+        (overlay-put ov 'invisible t)
+        (overlay-put ov 'rere-accepted t)
+        ;; clear pending property so nav skips it
+        (remove-text-properties
+         beg end '(rere-pending nil))))))
+
+(defun rere--patch-find-prev-pending ()
+  "Find position of the previous pending line."
+  (let ((pos (point)))
+    (while (and pos (> pos (point-min))
+                (not (get-text-property
+                      pos 'rere-pending)))
+      (setq pos (previous-single-property-change
+                 pos 'rere-pending)))
+    (when (and pos (> pos (point-min))
+               (get-text-property
+                pos 'rere-pending))
+      pos)))
+
+(defun rere--patch-update-headings ()
+  "Update Progress, Pending, and Reviewed headings in-place."
+  (save-excursion
+    (goto-char (point-min))
+    (when (re-search-forward
+           "^Progress: [0-9]+/[0-9]+ lines reviewed \\[[0-9]+%\\]"
+           nil t)
+      (let* ((pct (if (> rere--total-lines 0)
+                      (/ (* 100 rere--reviewed-count)
+                         rere--total-lines)
+                    100))
+             (new (format
+                   "Progress: %d/%d lines reviewed [%d%%]"
+                   rere--reviewed-count
+                   rere--total-lines pct))
+             (beg (match-beginning 0))
+             (end (match-end 0)))
+        (goto-char beg)
+        (delete-region beg end)
+        (insert (propertize
+                 new 'font-lock-face
+                 (if (= rere--reviewed-count
+                        rere--total-lines)
+                     'magit-diff-added
+                   'magit-section-heading)))))
+    (goto-char (point-min))
+    (when (re-search-forward
+           "^Pending review ([0-9]+)" nil t)
+      (let* ((pending (- rere--total-lines
+                         rere--reviewed-count))
+             (new (format "Pending review (%d)"
+                          pending))
+             (beg (match-beginning 0))
+             (end (match-end 0)))
+        (goto-char beg)
+        (delete-region beg end)
+        (insert new)))
+    (goto-char (point-min))
+    (when (re-search-forward
+           "^Reviewed changes ([0-9]+)" nil t)
+      (let* ((new (format
+                   "Reviewed changes (%d)"
+                   rere--reviewed-count))
+             (beg (match-beginning 0))
+             (end (match-end 0)))
+        (goto-char beg)
+        (delete-region beg end)
+        (insert new)))))
+
+(defun rere--patch-update-diffstat (lines)
+  "Update diffstat [reviewed/total] for files touched by LINES."
+  (let ((files-touched (make-hash-table :test 'equal)))
+    (dolist (dl lines)
+      (puthash (rere-diff-line-file dl) t files-touched))
+    (when (and rere--diffstat-cache
+               (> (hash-table-count files-touched) 0))
+      (pcase-let
+          ((`(,_ml ,_md ,entries) rere--diffstat-cache))
+        (dolist (entry entries)
+          (pcase-let
+              ((`(,file ,_a ,_r ,total ,_ ,rl) entry))
+            (when (gethash
+                   (rere-file-diff-filename file)
+                   files-touched)
+              (let* ((fname
+                      (rere-file-diff-filename file))
+                     (reviewed
+                      (cl-count-if
+                       #'rere--reviewed-p rl))
+                     (new-str
+                      (if (= reviewed total)
+                          (propertize
+                           (format "[%d/%d]"
+                                   reviewed total)
+                           'font-lock-face
+                           'magit-diff-added)
+                        (propertize
+                         (format "[%d/%d]"
+                                 reviewed total)
+                         'font-lock-face
+                         'magit-dimmed))))
+                (save-excursion
+                  (goto-char (point-min))
+                  (when (search-forward
+                         fname nil t)
+                    (let ((le (line-end-position)))
+                      (when (re-search-forward
+                             "\\[\\([0-9]+\\)/\
+\\([0-9]+\\)\\]"
+                             le t)
+                        (replace-match
+                         new-str t t)))))))))))))
+
+
 ;;;; Review operations
 
 (defun rere--accept-line (diff-line)
@@ -1193,13 +1365,20 @@ On a diff line, accept that line."
                           (get-text-property pos 'rere-line-hash)))))))))))
     (unless to-accept
       (user-error "[rere] No pending changes to accept"))
-    (unless target-hash
-      (setq target-hash
-            (rere--find-next-target to-accept (rere--pending-diff-lines))))
-    (dolist (dl to-accept)
-      (rere--accept-line dl))
     (rere--schedule-save-reviewed-state)
-    (rere--render-buffer target-hash)))
+    ;; fast path: single-line in-place patch
+    (if (and (= (length to-accept) 1)
+             (not has-region))
+        (rere--patch-accept-lines to-accept)
+      ;; bulk accept: full render
+      (unless target-hash
+        (setq target-hash
+              (rere--find-next-target
+               to-accept
+               (rere--pending-diff-lines))))
+      (dolist (dl to-accept)
+        (rere--accept-line dl))
+      (rere--render-buffer target-hash))))
 
 (defun rere-unaccept ()
   "Undo acceptance of region, category, line, hunk, or file at point.

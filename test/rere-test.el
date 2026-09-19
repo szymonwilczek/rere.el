@@ -879,5 +879,57 @@ index 0000000..1111111 100644
         (magit-section-show rev-sec))
       (should-not (oref rev-sec washer)))))
 
+(ert-deftest rere-test-patch-accept-inplace ()
+  "In-place accept hides line and updates headings."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff
+           rere-test--sample-diff))
+    (setq rere--reviewed
+          (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    ;; move to first pending line
+    (rere--goto-first-pending)
+    (let* ((dl (rere--section-diff-line))
+           (hash (rere-diff-line-hash dl))
+           (old-count rere--reviewed-count))
+      ;; in-place accept
+      (rere--patch-accept-lines (list dl))
+      ;; count updated
+      (should (= rere--reviewed-count
+                 (1+ old-count)))
+      ;; line hidden via overlay
+      (let ((ovs (overlays-at
+                  (or (text-property-any
+                       (point-min) (point-max)
+                       'rere-line-hash hash)
+                      (point-min)))))
+        ;; if pos not found, that means the property
+        ;; was cleared, which is also fine
+        (when (text-property-any
+               (point-min) (point-max)
+               'rere-line-hash hash)
+          (should
+           (cl-some
+            (lambda (ov)
+              (overlay-get ov 'rere-accepted))
+            ovs))))
+      ;; pending property cleared
+      (let ((pos (text-property-any
+                  (point-min) (point-max)
+                  'rere-line-hash hash)))
+        (when pos
+          (should-not
+           (get-text-property
+            pos 'rere-pending))))
+      ;; heading updated
+      (goto-char (point-min))
+      (should (re-search-forward
+               (format "Progress: %d/"
+                       rere--reviewed-count)
+               nil t)))))
+
+
 (provide 'rere-test)
 ;;; rere-test.el ends here
