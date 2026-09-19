@@ -668,6 +668,7 @@ Otherwise, try to preserve cursor position."
         (saved-section-path (rere--current-section-path))
         (saved-line-hash (or target-hash
                              (rere--line-hash-at-point))))
+    (remove-overlays (point-min) (point-max))
     (erase-buffer)
     (rere--count-lines)
     (magit-insert-section (magit-root-section)
@@ -1339,6 +1340,7 @@ Pending."
   (interactive)
   (rere--save-reviewed-state)
   (let ((config rere--saved-window-config))
+    (setq rere--saved-window-config nil)
     (kill-buffer (current-buffer))
     (when config
       (set-window-configuration config))))
@@ -1404,6 +1406,8 @@ shadow them."
   "Rere"
   "Major mode for rebase review.
 \\{rere-mode-map}"
+  (setq-local magit-section-inhibit-markers t)
+  (add-hook 'kill-buffer-hook #'rere--save-reviewed-state nil t)
   (setq-local revert-buffer-function
               (lambda (&rest _) (rere-refresh))))
 

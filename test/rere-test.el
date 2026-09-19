@@ -724,6 +724,17 @@ index 0000000..1111111 100644
     (dolist (line lines)
       (should (null (rere-diff-line-highlights line))))))
 
+(ert-deftest rere-test-no-marker-leak-on-render ()
+  "Rendering buffer uses integer section boundaries without leaking markers."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    (should (integerp (oref magit-root-section start)))
+    (should (integerp (oref magit-root-section end)))))
+
 ;;;; Diffstat tests
 
 (ert-deftest rere-test-diffstat-graph ()
