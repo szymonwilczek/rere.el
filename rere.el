@@ -663,11 +663,13 @@ next pending line.  Returns t if patch was performed."
     (dolist (dl lines)
       (let ((hash (rere-diff-line-hash dl)))
         (rere--patch-hide-line hash)))
-    ;; 4) update headings in-place
+    ;; 4) hide empty parent sections
+    (rere--patch-hide-empty-sections)
+    ;; 5) update headings in-place
     (rere--patch-update-headings)
-    ;; 5) update diffstat reviewed counts
+    ;; 6) update diffstat reviewed counts
     (rere--patch-update-diffstat lines)
-    ;; 6) move to next pending line
+    ;; 7) move to next pending line
     (let ((next (save-excursion
                   (forward-line 1)
                   (text-property-any
@@ -684,7 +686,7 @@ next pending line.  Returns t if patch was performed."
             (unless (get-text-property
                      (point) 'rere-pending)
               (rere--goto-pending-section))))))
-    ;; 7) check 100%
+    ;; 8) check 100%
     (when (and (> rere--total-lines 0)
                (= rere--reviewed-count
                   rere--total-lines)
@@ -710,6 +712,49 @@ Press 'q' to return, then continue in Magit."))
         ;; clear pending property so nav skips it
         (remove-text-properties
          beg end '(rere-pending nil))))))
+
+(defun rere--section-has-visible-pending-p (section)
+  "Return non-nil if SECTION has any visible pending lines in its range."
+  (when (and (oref section start) (oref section end))
+    (let ((pos (oref section start))
+          (limit (oref section end))
+          (found nil))
+      (while (and (not found) pos (< pos limit))
+        (when (and (get-text-property pos 'rere-pending)
+                   (not (invisible-p pos)))
+          (setq found t))
+        (setq pos (next-single-property-change pos 'rere-pending nil limit)))
+      found)))
+
+(defun rere--patch-hide-empty-sections ()
+  "Hide empty hunk/file headings under Pending after in-place accept."
+  (when-let* ((pending-sec
+               (and (bound-and-true-p magit-root-section)
+                    (cl-find-if
+                     (lambda (s) (eq (oref s type) 'rere-pending))
+                     (oref magit-root-section children)))))
+    (dolist (file-sec (oref pending-sec children))
+      (when (eq (oref file-sec type) 'rere-file-section)
+        (let ((file-has-pending nil))
+          (dolist (hunk-sec (oref file-sec children))
+            (when (eq (oref hunk-sec type) 'rere-hunk-section)
+              (if (rere--section-has-visible-pending-p hunk-sec)
+                  (setq file-has-pending t)
+                ;; hide the empty hunk heading
+                (let ((beg (oref hunk-sec start))
+                      (end (oref hunk-sec end)))
+                  (when (and beg end)
+                    (let ((ov (make-overlay beg end nil t nil)))
+                      (overlay-put ov 'invisible t)
+                      (overlay-put ov 'rere-empty-section t)))))))
+          (unless file-has-pending
+            ;; hide the empty file heading
+            (let ((beg (oref file-sec start))
+                  (end (oref file-sec end)))
+              (when (and beg end)
+                (let ((ov (make-overlay beg end nil t nil)))
+                  (overlay-put ov 'invisible t)
+                  (overlay-put ov 'rere-empty-section t))))))))))
 
 (defun rere--patch-find-prev-pending ()
   "Find position of the previous pending line."
