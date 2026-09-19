@@ -838,5 +838,46 @@ index 0000000..1111111 100644
         (rere--render-buffer))
       (should (string-match-p "100% reviewed" msg)))))
 
+(ert-deftest rere-test-debounced-save ()
+  "Debounced save schedules timer and immediate save executes now."
+  (let ((tmp-dir (make-temp-file "rere-test-debounce-" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'rere--rebase-dir)
+                   (lambda () tmp-dir)))
+          (with-temp-buffer
+            (rere-mode)
+            (setq rere--commit-info '(:sha "deb123"))
+            (setq rere--reviewed (make-hash-table :test 'equal))
+            (puthash "h1" t rere--reviewed)
+            (rere--schedule-save-reviewed-state)
+            (should (timerp rere--save-state-timer))
+            (rere--save-reviewed-state-now)
+            (should-not rere--save-state-timer)
+            (let ((file (expand-file-name "rere-reviewed-deb123" tmp-dir)))
+              (should (file-exists-p file)))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest rere-test-reviewed-section-washer ()
+  "Reviewed section uses lazy washer to render content on demand."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (setq rere--reviewed (make-hash-table :test 'equal))
+    (let* ((hunk (car (rere-file-diff-hunks (car rere--diff-files))))
+           (dl (car (rere-hunk-lines hunk))))
+      (puthash (rere-diff-line-hash dl) t rere--reviewed))
+    (rere--render-buffer)
+    (let ((rev-sec (cl-find 'rere-reviewed
+                            (oref magit-root-section children)
+                            :key (lambda (s) (oref s type)))))
+      (should (oref rev-sec hidden))
+      ;; washer is set when hidden
+      (should (oref rev-sec washer))
+      ;; showing section washes content
+      (let ((inhibit-read-only t))
+        (magit-section-show rev-sec))
+      (should-not (oref rev-sec washer)))))
+
 (provide 'rere-test)
 ;;; rere-test.el ends here

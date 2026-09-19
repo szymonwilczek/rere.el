@@ -171,6 +171,29 @@
         (dolist (h (nreverse hashes))
           (insert h "\n"))))))
 
+(defvar-local rere--save-state-timer nil
+  "Timer for debounced saving of reviewed state.")
+
+(defun rere--schedule-save-reviewed-state ()
+  "Schedule saving of reviewed state after a short idle delay."
+  (when (timerp rere--save-state-timer)
+    (cancel-timer rere--save-state-timer))
+  (setq rere--save-state-timer
+        (run-with-idle-timer 0.25 nil
+                             (lambda (buf)
+                               (when (buffer-live-p buf)
+                                 (with-current-buffer buf
+                                   (rere--save-reviewed-state)
+                                   (setq rere--save-state-timer nil))))
+                             (current-buffer))))
+
+(defun rere--save-reviewed-state-now ()
+  "Save reviewed state immediately and cancel any pending timer."
+  (when (timerp rere--save-state-timer)
+    (cancel-timer rere--save-state-timer)
+    (setq rere--save-state-timer nil))
+  (rere--save-reviewed-state))
+
 (defun rere--load-reviewed-state ()
   "Load reviewed hashes from the rebase state directory.
 Return a hash table of reviewed hashes."
@@ -721,10 +744,11 @@ Return t if found, nil otherwise."
 
 (defun rere--line-hash-at-point ()
   "Return the diff-line hash at point, if any."
-  (when-let* ((section (magit-current-section)))
-    (let ((value (oref section value)))
-      (when (rere-diff-line-p value)
-        (rere-diff-line-hash value)))))
+  (or (get-text-property (point) 'rere-line-hash)
+      (when-let* ((section (magit-current-section)))
+        (let ((value (oref section value)))
+          (when (rere-diff-line-p value)
+            (rere-diff-line-hash value))))))
 
 (defun rere--goto-line-hash (hash)
   "Move point to the line with HASH.  Return t if found."
@@ -841,51 +865,62 @@ MAX-DIGITS is the maximum width of the total diff count column."
             rev-part
             "\n")))
 
+(defvar-local rere--diffstat-cache nil
+  "Cached metadata for diffstat rendering: (max-len max-digits entries).")
+
+(defun rere--compute-diffstat-cache ()
+  "Compute and cache static diffstat metadata for `rere--diff-files'."
+  (if (null rere--diff-files)
+      (setq rere--diffstat-cache nil)
+    (let* ((entries
+            (mapcar
+             (lambda (file)
+               (let ((added 0)
+                     (removed 0)
+                     (total 0)
+                     (rl nil))
+                 (dolist (hunk (rere-file-diff-hunks file))
+                   (dolist (dl (rere-hunk-lines hunk))
+                     (when (rere--reviewable-p dl)
+                       (cl-incf total)
+                       (if (eq (rere-diff-line-type dl) 'added)
+                           (cl-incf added)
+                         (cl-incf removed))
+                       (push dl rl))))
+                 (list file added removed total (+ added removed)
+                       (nreverse rl))))
+             rere--diff-files))
+           (names
+            (mapcar (lambda (f)
+                      (let ((fn (rere-file-diff-filename f)))
+                        (if (> (length fn) 35)
+                            (concat "..." (substring fn (- (length fn) 32)))
+                          fn)))
+                    rere--diff-files))
+           (max-len (min 35 (max 10 (apply #'max (mapcar #'length names)))))
+           (max-digits
+            (apply #'max (mapcar (lambda (e)
+                                   (length (number-to-string (nth 4 e))))
+                                 entries))))
+      (setq rere--diffstat-cache (list max-len max-digits entries)))))
+
 (defun rere--insert-diffstat-section ()
   "Insert diffstat section listing changed files and review stats."
   (when (and rere-show-diffstat rere--diff-files)
+    (unless rere--diffstat-cache
+      (rere--compute-diffstat-cache))
     (magit-insert-section (rere-diffstat nil nil)
       (magit-insert-heading
         (format "Files changed (%d)\n" (length rere--diff-files)))
-      (let* ((names (mapcar (lambda (f)
-                              (let ((fn (rere-file-diff-filename f)))
-                                (if (> (length fn) 35)
-                                    (concat "..."
-                                            (substring
-                                             fn (- (length fn) 32)))
-                                  fn)))
-                            rere--diff-files))
-             (max-len (min 35 (max 10 (apply #'max
-                                             (mapcar #'length names)))))
-             (file-stats
-              (mapcar
-               (lambda (file)
-                 (let ((added 0)
-                       (removed 0)
-                       (reviewed 0)
-                       (total 0))
-                   (dolist (hunk (rere-file-diff-hunks file))
-                     (dolist (dl (rere-hunk-lines hunk))
-                       (when (rere--reviewable-p dl)
-                         (cl-incf total)
-                         (if (eq (rere-diff-line-type dl) 'added)
-                             (cl-incf added)
-                           (cl-incf removed))
-                         (when (rere--reviewed-p dl)
-                           (cl-incf reviewed)))))
-                   (list file added removed reviewed total (+ added removed))))
-               rere--diff-files))
-             (max-digits
-              (apply #'max (mapcar (lambda (s)
-                                     (length (number-to-string (nth 5 s))))
-                                   file-stats))))
-        (dolist (stat file-stats)
-          (pcase-let ((`(,file ,added ,removed ,reviewed ,total ,_) stat))
-            (magit-insert-section (rere-file-stat file nil)
-              (insert
-               (rere--format-file-diffstat
-                (rere-file-diff-filename file)
-                added removed reviewed total max-len max-digits))))))
+      (pcase-let ((`(,max-len ,max-digits ,entries) rere--diffstat-cache))
+        (dolist (entry entries)
+          (pcase-let ((`(,file ,added ,removed ,total ,_ ,rl) entry))
+            (let ((reviewed (cl-count-if #'rere--reviewed-p rl)))
+              (magit-insert-section (rere-file-stat file nil)
+                (insert
+                 (rere--format-file-diffstat
+                  (rere-file-diff-filename file)
+                  added removed reviewed total max-len max-digits)))))))
       (insert "\n"))))
 
 (defun rere--insert-pending-section ()
@@ -905,13 +940,23 @@ MAX-DIGITS is the maximum width of the total diff count column."
 
 (defun rere--insert-reviewed-section ()
   "Insert the Reviewed changes section."
-  (magit-insert-section (rere-reviewed nil t)
-    (magit-insert-heading
-      (format "Reviewed changes (%d)\n"
-              rere--reviewed-count))
-    (when (> rere--reviewed-count 0)
-      (rere--insert-diff-lines #'rere--reviewed-p))
-    (insert "\n")))
+  (let* ((prev-sec
+          (and (bound-and-true-p magit-root-section)
+               (cl-find-if
+                (lambda (s) (eq (oref s type) 'rere-reviewed))
+                (oref magit-root-section children))))
+         (hidden (if prev-sec (oref prev-sec hidden) t)))
+    (magit-insert-section
+        (rere-reviewed nil hidden
+                       :washer (lambda ()
+                                 (rere--insert-diff-lines #'rere--reviewed-p)))
+      (magit-insert-heading
+        (format "Reviewed changes (%d)\n"
+                rere--reviewed-count))
+      (unless hidden
+        (when (> rere--reviewed-count 0)
+          (rere--insert-diff-lines #'rere--reviewed-p)))
+      (insert "\n"))))
 
 (defun rere--insert-diff-lines (pred)
   "Insert diff lines matching PRED grouped by file/hunk."
@@ -986,12 +1031,13 @@ Return alist of (hunk . lines-to-render)."
     (magit-insert-section (rere-line dl)
       (let ((beg (point)))
         (insert "  " prefix content "\n")
-        (put-text-property beg (point) 'font-lock-face face)
-        (put-text-property beg (point) 'rere-line-hash hash)
-        (when reviewable
-          (put-text-property beg (point) 'rere-reviewable t))
-        (when pending
-          (put-text-property beg (point) 'rere-pending t))
+        (add-text-properties
+         beg (point)
+         `(font-lock-face ,face
+                          rere-line-hash ,hash
+                          rere-diff-line ,dl
+                          ,@(when reviewable '(rere-reviewable t))
+                          ,@(when pending '(rere-pending t))))
         (when (and hl-face highlights)
           (let ((offset (+ beg 3)))
             (dolist (hl highlights)
@@ -1020,9 +1066,10 @@ Return alist of (hunk . lines-to-render)."
 
 (defun rere--section-diff-line ()
   "Return the diff-line at point, or nil."
-  (when-let* ((section (magit-current-section)))
-    (let ((val (oref section value)))
-      (when (rere-diff-line-p val) val))))
+  (or (get-text-property (point) 'rere-diff-line)
+      (when-let* ((section (magit-current-section)))
+        (let ((val (oref section value)))
+          (when (rere-diff-line-p val) val)))))
 
 (defun rere--section-hunk ()
   "Return the hunk at point, or nil."
@@ -1066,46 +1113,93 @@ On a diff line, accept that line."
                          (evil-visual-state-p)))
          (has-region (or in-visual (use-region-p)))
          (to-accept nil)
-         (all-pending (rere--pending-diff-lines)))
-    (if has-region
-        (progn
-          (setq to-accept
-                (cl-remove-if-not
-                 #'rere--pending-p
-                 (rere--region-elements
-                  (region-beginning) (region-end))))
-          (when in-visual
-            (evil-normal-state))
-          (deactivate-mark))
+         (target-hash nil))
+    (cond
+     (has-region
+      (setq to-accept
+            (cl-remove-if-not
+             #'rere--pending-p
+             (rere--region-elements
+              (region-beginning) (region-end))))
+      (when in-visual
+        (evil-normal-state))
+      (deactivate-mark))
+     ((when-let* ((dl (rere--section-diff-line)))
+        (when (rere--pending-p dl)
+          (setq to-accept (list dl))
+          (setq target-hash
+                (or (save-excursion
+                      (forward-line 1)
+                      (when-let* ((pos (text-property-any
+                                        (point) (point-max)
+                                        'rere-pending t)))
+                        (get-text-property pos 'rere-line-hash)))
+                    (let ((pos (point)))
+                      (while (and pos (> pos (point-min))
+                                  (not (get-text-property
+                                        pos 'rere-pending)))
+                        (setq pos (previous-single-property-change
+                                   pos 'rere-pending)))
+                      (when (and pos (> pos (point-min)))
+                        (get-text-property pos 'rere-line-hash))))))))
+     (t
       (when-let* ((section (magit-current-section)))
         (let ((val (oref section value)))
-          (setq to-accept
-                (cond
-                 ((eq (oref section type) 'rere-pending)
-                  all-pending)
-                 ((rere-file-diff-p val)
+          (cond
+           ((eq (oref section type) 'rere-pending)
+            (setq to-accept (rere--pending-diff-lines)))
+           ((rere-file-diff-p val)
+            (setq to-accept
                   (cl-remove-if-not
                    #'rere--pending-p
                    (cl-mapcan
                     (lambda (h)
                       (copy-sequence (rere-hunk-lines h)))
                     (rere-file-diff-hunks val))))
-                 ((rere-hunk-p val)
+            (setq target-hash
+                  (or (save-excursion
+                        (goto-char (oref section end))
+                        (when-let* ((pos (text-property-any
+                                          (point) (point-max)
+                                          'rere-pending t)))
+                          (get-text-property pos 'rere-line-hash)))
+                      (let ((pos (oref section start)))
+                        (while (and pos (> pos (point-min))
+                                    (not (get-text-property
+                                          pos 'rere-pending)))
+                          (setq pos (previous-single-property-change
+                                     pos 'rere-pending)))
+                        (when (and pos (> pos (point-min)))
+                          (get-text-property pos 'rere-line-hash))))))
+           ((rere-hunk-p val)
+            (setq to-accept
                   (cl-remove-if-not
                    #'rere--pending-p
                    (copy-sequence (rere-hunk-lines val))))
-                 ((rere-diff-line-p val)
-                  (when (rere--pending-p val)
-                    (list val)))
-                 (t nil))))))
+            (setq target-hash
+                  (or (save-excursion
+                        (goto-char (oref section end))
+                        (when-let* ((pos (text-property-any
+                                          (point) (point-max)
+                                          'rere-pending t)))
+                          (get-text-property pos 'rere-line-hash)))
+                      (let ((pos (oref section start)))
+                        (while (and pos (> pos (point-min))
+                                    (not (get-text-property
+                                          pos 'rere-pending)))
+                          (setq pos (previous-single-property-change
+                                     pos 'rere-pending)))
+                        (when (and pos (> pos (point-min)))
+                          (get-text-property pos 'rere-line-hash)))))))))))
     (unless to-accept
       (user-error "[rere] No pending changes to accept"))
-    (let ((target-hash
-           (rere--find-next-target to-accept all-pending)))
-      (dolist (dl to-accept)
-        (rere--accept-line dl))
-      (rere--save-reviewed-state)
-      (rere--render-buffer target-hash))))
+    (unless target-hash
+      (setq target-hash
+            (rere--find-next-target to-accept (rere--pending-diff-lines))))
+    (dolist (dl to-accept)
+      (rere--accept-line dl))
+    (rere--schedule-save-reviewed-state)
+    (rere--render-buffer target-hash)))
 
 (defun rere-unaccept ()
   "Undo acceptance of region, category, line, hunk, or file at point.
@@ -1114,8 +1208,7 @@ Move items back from Reviewed to Pending."
   (let* ((in-visual (and (bound-and-true-p evil-mode)
                          (evil-visual-state-p)))
          (has-region (or in-visual (use-region-p)))
-         (to-unaccept nil)
-         (all-reviewed (rere--reviewed-diff-lines)))
+         (to-unaccept nil))
     (if has-region
         (progn
           (setq to-unaccept
@@ -1131,7 +1224,7 @@ Move items back from Reviewed to Pending."
           (setq to-unaccept
                 (cond
                  ((eq (oref section type) 'rere-reviewed)
-                  all-reviewed)
+                  (rere--reviewed-diff-lines))
                  ((rere-diff-line-p val)
                   (when (rere--reviewed-p val)
                     (list val)))
@@ -1150,10 +1243,10 @@ Move items back from Reviewed to Pending."
     (unless to-unaccept
       (user-error "[rere] No reviewed changes to unaccept"))
     (let ((target-hash
-           (rere--find-next-target to-unaccept all-reviewed)))
+           (rere--find-next-target to-unaccept (rere--reviewed-diff-lines))))
       (dolist (dl to-unaccept)
         (rere--unaccept-line dl))
-      (rere--save-reviewed-state)
+      (rere--schedule-save-reviewed-state)
       (rere--render-buffer target-hash))))
 
 (defun rere-toggle-section ()
@@ -1322,7 +1415,8 @@ Pending."
             (puthash (rere-diff-line-hash dl)
                      t rere--reviewed)))))
     (rere--count-lines)
-    (rere--save-reviewed-state)
+    (rere--save-reviewed-state-now)
+    (setq rere--diffstat-cache nil)
     (rere--render-buffer)
     (message "[rere] Diff refreshed. %d/%d reviewed."
              rere--reviewed-count
@@ -1331,7 +1425,7 @@ Pending."
 (defun rere-quit ()
   "Quit the rere buffer and restore windows."
   (interactive)
-  (rere--save-reviewed-state)
+  (rere--save-reviewed-state-now)
   (let ((config rere--saved-window-config))
     (setq rere--saved-window-config nil)
     (kill-buffer (current-buffer))
@@ -1400,7 +1494,7 @@ shadow them."
   "Major mode for rebase review.
 \\{rere-mode-map}"
   (setq-local magit-section-inhibit-markers t)
-  (add-hook 'kill-buffer-hook #'rere--save-reviewed-state nil t)
+  (add-hook 'kill-buffer-hook #'rere--save-reviewed-state-now nil t)
   (setq-local revert-buffer-function
               (lambda (&rest _) (rere-refresh))))
 
@@ -1430,6 +1524,7 @@ Only works during an interactive git rebase."
       (setq rere--reviewed (rere--load-reviewed-state)))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
+    (setq rere--diffstat-cache nil)
     (rere--render-buffer)
     (or (rere--goto-first-pending)
         (goto-char (point-min)))))
