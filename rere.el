@@ -678,27 +678,26 @@ Press 'q' to return, then continue in Magit."))
                    'magit-section-heading)))))
     (goto-char (point-min))
     (when (re-search-forward
-           "^Pending review ([0-9]+)" nil t)
+           "^Pending review (\\([0-9]+\\))" nil t)
       (let* ((pending (- rere--total-lines
                          rere--reviewed-count))
-             (new (format "Pending review (%d)"
-                          pending))
-             (beg (match-beginning 0))
-             (end (match-end 0)))
+             (new (number-to-string pending))
+             (beg (match-beginning 1))
+             (end (match-end 1))
+             (props (text-properties-at beg)))
         (goto-char beg)
         (delete-region beg end)
-        (insert new)))
+        (insert (apply #'propertize new props))))
     (goto-char (point-min))
     (when (re-search-forward
-           "^Reviewed changes ([0-9]+)" nil t)
-      (let* ((new (format
-                   "Reviewed changes (%d)"
-                   rere--reviewed-count))
-             (beg (match-beginning 0))
-             (end (match-end 0)))
+           "^Reviewed changes (\\([0-9]+\\))" nil t)
+      (let* ((new (number-to-string rere--reviewed-count))
+             (beg (match-beginning 1))
+             (end (match-end 1))
+             (props (text-properties-at beg)))
         (goto-char beg)
         (delete-region beg end)
-        (insert new)))))
+        (insert (apply #'propertize new props))))))
 
 (defun rere--patch-update-diffstat (lines)
   "Update diffstat [reviewed/total] for files touched by LINES."
@@ -1366,19 +1365,25 @@ On a diff line, accept that line."
     (unless to-accept
       (user-error "[rere] No pending changes to accept"))
     (rere--schedule-save-reviewed-state)
-    ;; fast path: single-line in-place patch
-    (if (and (= (length to-accept) 1)
-             (not has-region))
-        (rere--patch-accept-lines to-accept)
-      ;; bulk accept: full render
-      (unless target-hash
-        (setq target-hash
-              (rere--find-next-target
-               to-accept
-               (rere--pending-diff-lines))))
-      (dolist (dl to-accept)
-        (rere--accept-line dl))
-      (rere--render-buffer target-hash))))
+    (let ((rev-sec
+           (and (bound-and-true-p magit-root-section)
+                (cl-find-if
+                 (lambda (s) (eq (oref s type) 'rere-reviewed))
+                 (oref magit-root-section children)))))
+      ;; fast path: single-line in-place patch when reviewed is collapsed
+      (if (and (= (length to-accept) 1)
+               (not has-region)
+               (or (null rev-sec) (oref rev-sec hidden)))
+          (rere--patch-accept-lines to-accept)
+        ;; bulk accept or reviewed section expanded: full render
+        (unless target-hash
+          (setq target-hash
+                (rere--find-next-target
+                 to-accept
+                 (rere--pending-diff-lines))))
+        (dolist (dl to-accept)
+          (rere--accept-line dl))
+        (rere--render-buffer target-hash)))))
 
 (defun rere-unaccept ()
   "Undo acceptance of region, category, line, hunk, or file at point.

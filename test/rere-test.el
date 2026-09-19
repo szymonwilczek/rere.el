@@ -930,6 +930,49 @@ index 0000000..1111111 100644
                        rere--reviewed-count)
                nil t)))))
 
+(ert-deftest rere-test-toggle-reviewed-after-inplace-accept ()
+  "Toggling Reviewed changes works after in-place line accept."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff
+           rere-test--sample-diff))
+    (setq rere--reviewed
+          (make-hash-table :test 'equal))
+    (rere--render-buffer)
+    ;; accept single line in-place
+    (rere--goto-first-pending)
+    (let ((dl (rere--section-diff-line)))
+      (rere-smart-accept)
+      ;; heading should retain magit-section property
+      (goto-char (point-min))
+      (should (re-search-forward
+               "^Reviewed changes (1)" nil t))
+      (let ((sec (magit-current-section)))
+        (should sec)
+        (should (eq (oref sec type) 'rere-reviewed))
+        (should (oref sec hidden))
+        ;; toggle should expand and render reviewed line
+        (rere-toggle-section)
+        (let ((rev-sec (cl-find 'rere-reviewed
+                                (oref magit-root-section children)
+                                :key (lambda (s) (oref s type)))))
+          (should-not (oref rev-sec hidden))
+          ;; reviewed lines should now be present
+          (goto-char (oref rev-sec start))
+          (should (search-forward
+                   (rere-diff-line-content dl)
+                   (oref rev-sec end) t))
+          ;; toggle again should collapse
+          (goto-char (point-min))
+          (re-search-forward "^Reviewed changes (1)" nil t)
+          (rere-toggle-section)
+          (let ((collapsed-sec
+                 (cl-find 'rere-reviewed
+                          (oref magit-root-section children)
+                          :key (lambda (s) (oref s type)))))
+            (should (oref collapsed-sec hidden))))))))
+
 
 (provide 'rere-test)
 ;;; rere-test.el ends here
