@@ -92,6 +92,11 @@
   "Face for flagged (stinky) diff lines."
   :group 'rere)
 
+(defface rere-current-line
+  '((t :inherit magit-section-highlight :extend t))
+  "Face highlighting the line at point."
+  :group 'rere)
+
 (defface rere-flagged-heading
   '((t :inherit (warning magit-section-heading)))
   "Face for flagged section heading."
@@ -142,6 +147,12 @@
 
 (defvar-local rere--commit-info nil
   "Plist with :sha :title :step :total.")
+
+(defvar-local rere--visibility nil
+  "Hash table mapping section keys to `hide' or `show'.")
+
+(defvar-local rere--line-overlay nil
+  "Overlay highlighting the line at point.")
 
 (defvar-local rere--saved-window-config nil
   "Window configuration before entering rere.")
@@ -1000,12 +1011,14 @@ Expands any hunks or file sections intersecting the region."
     (save-excursion
       (goto-char b)
       (while (< (point) e)
-        (when-let* ((section (magit-current-section)))
-          (let ((val (oref section value)))
+        (if-let* ((dl (get-text-property (point) 'rere-diff-line)))
+            (unless (memq dl lines)
+              (push dl lines))
+          (when-let* ((section (magit-current-section))
+                      (val (and (= (oref section start)
+                                   (line-beginning-position))
+                                (oref section value))))
             (cond
-             ((rere-diff-line-p val)
-              (unless (memq val lines)
-                (push val lines)))
              ((rere-hunk-p val)
               (dolist (dl (rere-hunk-lines val))
                 (unless (memq dl lines)
@@ -1054,6 +1067,101 @@ Expands any hunks or file sections intersecting the region."
           (when prev-dl
             (rere-diff-line-hash prev-dl)))))))
 
+;;;; Section visibility
+
+(defconst rere--category-types '(rere-pending rere-stinky rere-reviewed)
+  "Section types of the top-level review categories.")
+
+(defun rere--section-category (section)
+  "Return the category section type containing SECTION, or nil."
+  (let ((s section))
+    (while (and s (not (memq (oref s type) rere--category-types)))
+      (setq s (oref s parent)))
+    (and s (oref s type))))
+
+(defun rere--hunk-old-start (hunk)
+  "Return the old-file start line of HUNK as a string."
+  (let ((header (rere-hunk-header hunk)))
+    (if (string-match "^@@ -\\([0-9]+\\)" header)
+        (match-string 1 header)
+      header)))
+
+(defun rere--section-key (section)
+  "Return a key identifying SECTION across renders, or nil."
+  (let ((type (oref section type))
+        (val (oref section value)))
+    (cond
+     ((memq type '(rere-pending rere-stinky rere-reviewed rere-diffstat))
+      (list type))
+     ((eq type 'rere-file-section)
+      (list (rere--section-category section) 'file
+            (rere-file-diff-filename val)))
+     ((eq type 'rere-hunk-section)
+      (list (rere--section-category section) 'hunk
+            (rere-hunk-file val) (rere--hunk-old-start val))))))
+
+(defun rere--default-visibility (key)
+  "Return the visibility of the section with KEY when not yet toggled."
+  (if (equal key '(rere-reviewed)) 'hide 'show))
+
+(defun rere--visibility-of (key)
+  "Return `hide' or `show' for the section identified by KEY."
+  (or (and rere--visibility (gethash key rere--visibility))
+      (rere--default-visibility key)))
+
+(defun rere--visibility-hook (section)
+  "Decide visibility of SECTION from the recorded rere state.
+Used in `magit-section-set-visibility-hook', so magit never has to
+search the previous section tree, which is slow for large diffs."
+  (when (derived-mode-p 'rere-mode)
+    (let ((key (rere--section-key section)))
+      (if key (rere--visibility-of key) 'show))))
+
+(defun rere--remember-visibility (section)
+  "Record the current visibility of SECTION."
+  (when-let* ((key (rere--section-key section)))
+    (unless rere--visibility
+      (setq rere--visibility (make-hash-table :test 'equal)))
+    (puthash key (if (oref section hidden) 'hide 'show)
+             rere--visibility)))
+
+(defun rere--remember-all-visibility ()
+  "Record visibility of all collapsible sections before a re-render.
+This also picks up sections toggled with generic magit commands."
+  (when (and (bound-and-true-p magit-root-section)
+             (> (buffer-size) 0))
+    (dolist (cat (oref magit-root-section children))
+      (when (rere--section-key cat)
+        (rere--remember-visibility cat)
+        (dolist (file (oref cat children))
+          (rere--remember-visibility file)
+          (dolist (hunk (oref file children))
+            (rere--remember-visibility hunk)))))))
+
+(defun rere--apply-visibility (section)
+  "Create overlays hiding the bodies of hidden sections under SECTION.
+Unlike `magit-section-show', only sections that have a heading are
+visited, which keeps this proportional to the number of hunks."
+  (dolist (child (oref section children))
+    (when (oref child content)
+      (if (oref child hidden)
+          (magit-section-hide child)
+        (magit-section-maybe-update-visibility-indicator child)
+        (rere--apply-visibility child)))))
+
+;;;; Current line highlight
+
+(defun rere--update-line-highlight ()
+  "Highlight exactly the line at point."
+  (unless (and (overlayp rere--line-overlay)
+               (eq (overlay-buffer rere--line-overlay) (current-buffer)))
+    (setq rere--line-overlay (make-overlay (point-min) (point-min)))
+    (overlay-put rere--line-overlay 'face 'rere-current-line)
+    (overlay-put rere--line-overlay 'priority 1))
+  (move-overlay rere--line-overlay
+                (line-beginning-position)
+                (min (point-max) (line-beginning-position 2))))
+
 (defun rere--render-buffer (&optional target-hash)
   "Render the rere review buffer content.
 If TARGET-HASH is provided, move point to that line.
@@ -1062,6 +1170,7 @@ Otherwise, try to preserve cursor position."
         (saved-section-path (rere--current-section-path))
         (saved-line-hash (or target-hash
                              (rere--line-hash-at-point))))
+    (rere--remember-all-visibility)
     (remove-overlays (point-min) (point-max))
     (erase-buffer)
     (rere--count-lines)
@@ -1072,7 +1181,8 @@ Otherwise, try to preserve cursor position."
       (rere--insert-stinky-section)
       (rere--insert-reviewed-section)
       (rere--insert-footer))
-    (magit-section-show magit-root-section)
+    (rere--apply-visibility magit-root-section)
+    (setq magit-section-highlight-force-update t)
     (when (and (> rere--total-lines 0)
                (= rere--reviewed-count rere--total-lines)
                (zerop (rere--flagged-count)))
@@ -1085,7 +1195,8 @@ Otherwise, try to preserve cursor position."
         (rere--goto-first-pending)
         (rere--goto-first-flagged)
         (rere--goto-pending-section)
-        (goto-char (point-min)))))
+        (goto-char (point-min)))
+    (rere--update-line-highlight)))
 
 (defun rere--goto-pending-section ()
   "Move point to the Pending review section."
@@ -1347,16 +1458,13 @@ MAX-DIGITS is the maximum width of the total diff count column."
 
 (defun rere--insert-reviewed-section ()
   "Insert the Reviewed changes section."
-  (let* ((prev-sec
-          (and (bound-and-true-p magit-root-section)
-               (cl-find-if
-                (lambda (s) (eq (oref s type) 'rere-reviewed))
-                (oref magit-root-section children))))
-         (hidden (if prev-sec (oref prev-sec hidden) t)))
+  (let ((hidden (eq (rere--visibility-of '(rere-reviewed)) 'hide)))
     (magit-insert-section
         (rere-reviewed nil hidden
-                       :washer (lambda ()
-                                 (rere--insert-diff-lines #'rere--reviewed-p)))
+                       :washer (when hidden
+                                 (lambda ()
+                                   (rere--insert-diff-lines
+                                    #'rere--reviewed-p))))
       (magit-insert-heading
         (format "Reviewed changes (%d)\n"
                 rere--reviewed-count))
@@ -1447,23 +1555,24 @@ Return alist of (hunk . lines-to-render)."
          (hash (rere-diff-line-hash dl))
          (reviewable (rere--reviewable-p dl))
          (pending (rere--pending-p dl)))
-    (magit-insert-section (rere-line dl)
-      (let ((beg (point)))
-        (insert "  " prefix content "\n")
-        (add-text-properties
-         beg (point)
-         `(font-lock-face ,face
-                          rere-line-hash ,hash
-                          rere-diff-line ,dl
-                          ,@(when reviewable '(rere-reviewable t))
-                          ,@(when pending '(rere-pending t))
-                          ,@(when flagged '(rere-flagged t))))
-        (when (and hl-face highlights)
-          (let ((offset (+ beg 3)))
-            (dolist (hl highlights)
-              (put-text-property (+ offset (car hl))
-                                 (+ offset (cdr hl))
-                                 'font-lock-face hl-face))))))))
+    ;; diff lines are plain text inside their hunk section:
+    ;; creating a section object per line is the dominant cost for large diffs
+    (let ((beg (point)))
+      (insert "  " prefix content "\n")
+      (add-text-properties
+       beg (point)
+       `(font-lock-face ,face
+                        rere-line-hash ,hash
+                        rere-diff-line ,dl
+                        ,@(when reviewable '(rere-reviewable t))
+                        ,@(when pending '(rere-pending t))
+                        ,@(when flagged '(rere-flagged t))))
+      (when (and hl-face highlights)
+        (let ((offset (+ beg 3)))
+          (dolist (hl highlights)
+            (put-text-property (+ offset (car hl))
+                               (+ offset (cdr hl))
+                               'font-lock-face hl-face)))))))
 
 (defun rere--insert-footer ()
   "Insert footer with keybinding hints."
@@ -1487,10 +1596,7 @@ Return alist of (hunk . lines-to-render)."
 
 (defun rere--section-diff-line ()
   "Return the diff-line at point, or nil."
-  (or (get-text-property (point) 'rere-diff-line)
-      (when-let* ((section (magit-current-section)))
-        (let ((val (oref section value)))
-          (when (rere-diff-line-p val) val)))))
+  (get-text-property (point) 'rere-diff-line))
 
 (defun rere--section-hunk ()
   "Return the hunk at point, or nil."
@@ -1546,7 +1652,9 @@ On a diff line, accept that line."
         (evil-normal-state))
       (deactivate-mark))
      ((when-let* ((dl (rere--section-diff-line)))
-        (when (rere--pending-p dl)
+        (unless (rere--pending-p dl)
+          (user-error "[rere] Line at point is not pending"))
+        (progn
           (setq to-accept (list dl))
           (setq target-hash
                 (or (save-excursion
@@ -1562,7 +1670,8 @@ On a diff line, accept that line."
                         (setq pos (previous-single-property-change
                                    pos 'rere-pending)))
                       (when (and pos (> pos (point-min)))
-                        (get-text-property pos 'rere-line-hash))))))))
+                        (get-text-property pos 'rere-line-hash)))))
+          t)))
      (t
       (when-let* ((section (magit-current-section)))
         (let ((val (oref section value)))
@@ -1730,7 +1839,8 @@ If on a file header or diff line, toggle that file."
             ((memq (oref sec type)
                    '(rere-pending rere-reviewed rere-stinky))
              sec)
-            ((eq (oref sec type) 'rere-hunk-section)
+            ((and (eq (oref sec type) 'rere-hunk-section)
+                  (not (rere--section-diff-line)))
              sec)
             (t
              (let ((file-sec sec))
@@ -1740,6 +1850,7 @@ If on a file header or diff line, toggle that file."
                  (setq file-sec (oref file-sec parent)))
                (or file-sec sec))))))
       (magit-section-toggle target-sec)
+      (rere--remember-visibility target-sec)
       (when (and (oref target-sec hidden)
                  (oref target-sec content)
                  (> (point) (oref target-sec content)))
@@ -2148,6 +2259,10 @@ New or modified lines appear in Pending."
   "Major mode for rebase review.
 \\{rere-mode-map}"
   (setq-local magit-section-inhibit-markers t)
+  (setq-local magit-section-highlight-current nil)
+  (add-hook 'magit-section-set-visibility-hook
+            #'rere--visibility-hook nil t)
+  (add-hook 'post-command-hook #'rere--update-line-highlight nil t)
   (add-hook 'kill-buffer-hook #'rere--save-reviewed-state-now nil t)
   (setq-local revert-buffer-function
               (lambda (&rest _) (rere-refresh)))

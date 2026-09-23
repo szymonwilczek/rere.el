@@ -97,9 +97,10 @@ Every hunk has 6 context, 2 removed and 4 added lines."
   "Move to the first pending hunk heading and call FN."
   (lambda ()
     (rere--goto-first-pending)
-    (goto-char (oref (oref (magit-current-section) parent) start))
-    (unless (rere-hunk-p (oref (magit-current-section) value))
-      (goto-char (oref (magit-current-section) start)))
+    (let ((s (magit-current-section)))
+      (while (and s (not (rere-hunk-p (oref s value))))
+        (setq s (oref s parent)))
+      (goto-char (oref s start)))
     (funcall fn)))
 
 (defun rere-bench-run ()

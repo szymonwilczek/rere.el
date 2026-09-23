@@ -652,6 +652,63 @@ index 0000000..1111111 100644
       (should (get-char-property (oref rev-sec content)
                                  'invisible)))))
 
+(defun rere-test--visible-lines ()
+  "Return the visible lines of the current buffer as a list of strings."
+  (let ((lines nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (unless (invisible-p (point))
+          (push (buffer-substring-no-properties
+                 (line-beginning-position) (line-end-position))
+                lines))
+        (forward-line 1)))
+    (nreverse lines)))
+
+(defun rere-test--setup-sample ()
+  "Render the sample diff in the current buffer with empty state."
+  (rere-mode)
+  (setq rere--diff-files (rere--parse-diff rere-test--sample-diff)
+        rere--reviewed (make-hash-table :test 'equal)
+        rere--flagged (make-hash-table :test 'equal)
+        rere--diffstat-cache nil)
+  (rere--render-buffer))
+
+(ert-deftest rere-test-line-highlight-covers-one-line ()
+  "The current line highlight spans exactly the line at point."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere--goto-first-pending)
+    (rere--update-line-highlight)
+    (should (= (overlay-start rere--line-overlay)
+               (line-beginning-position)))
+    (should (= (overlay-end rere--line-overlay)
+               (line-beginning-position 2)))))
+
+(ert-deftest rere-test-accept-on-context-line-errors ()
+  "Accepting on a context line never accepts the enclosing hunk."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "(defun foo ()")
+    (should (eq (rere-diff-line-type (rere--section-diff-line)) 'context))
+    (should-error (rere-smart-accept) :type 'user-error)
+    (should (= (hash-table-count rere--reviewed) 0))))
+
+(ert-deftest rere-test-visibility-survives-render ()
+  "Collapsed file sections stay collapsed after a re-render."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (re-search-forward "^  modified   bar.el")
+    (rere-toggle-section)
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (re-search-forward "^  modified   bar.el")
+    (should (oref (magit-current-section) hidden))
+    (should-not (member "  (removed-call)"
+                        (rere-test--visible-lines)))))
+
 ;;;; Context and diff navigation tests
 
 (ert-deftest rere-test-collect-file-lines-includes-context ()
@@ -689,8 +746,7 @@ index 0000000..1111111 100644
     (rere--render-buffer)
     (goto-char (point-min))
     (should (rere--goto-first-pending))
-    (let* ((sec (magit-current-section))
-           (val (oref sec value)))
+    (let ((val (rere--section-diff-line)))
       (should (rere-diff-line-p val))
       (should (eq (rere-diff-line-type val) 'removed))
       (should (equal (rere-diff-line-content val)
@@ -706,29 +762,29 @@ index 0000000..1111111 100644
     (rere--render-buffer)
     (rere--goto-first-pending)
     ;; initially on first reviewable line: - (message "old")
-    (let ((val1 (oref (magit-current-section) value)))
+    (let ((val1 (rere--section-diff-line)))
       (should (eq (rere-diff-line-type val1) 'removed)))
     ;; next diff line -> + (message "new")
     (rere-next-diff-line)
-    (let ((val2 (oref (magit-current-section) value)))
+    (let ((val2 (rere--section-diff-line)))
       (should (eq (rere-diff-line-type val2) 'added))
       (should (equal (rere-diff-line-content val2)
                      "  (message \"new\")")))
     ;; next diff line -> + (message "added")
     (rere-next-diff-line)
-    (let ((val3 (oref (magit-current-section) value)))
+    (let ((val3 (rere--section-diff-line)))
       (should (eq (rere-diff-line-type val3) 'added))
       (should (equal (rere-diff-line-content val3)
                      "  (message \"added\")")))
     ;; next diff line jumps over context to next file: - (removed-call)
     (rere-next-diff-line)
-    (let ((val4 (oref (magit-current-section) value)))
+    (let ((val4 (rere--section-diff-line)))
       (should (eq (rere-diff-line-type val4) 'removed))
       (should (equal (rere-diff-line-content val4)
                      "  (removed-call)")))
     ;; previous diff line jumps back to + (message "added")
     (rere-previous-diff-line)
-    (let ((val5 (oref (magit-current-section) value)))
+    (let ((val5 (rere--section-diff-line)))
       (should (eq (rere-diff-line-type val5) 'added))
       (should (equal (rere-diff-line-content val5)
                      "  (message \"added\")")))
