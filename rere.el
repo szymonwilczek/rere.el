@@ -326,6 +326,7 @@ Return structured representation of the diff."
         (current-file nil)
         (current-hunk nil)
         (current-filename nil)
+        (occurrences nil)
         (old-line 0)
         (new-line 0))
     (dolist (line (split-string raw-diff "\n"))
@@ -345,6 +346,7 @@ Return structured representation of the diff."
                    (rere-file-diff-hunks current-file)))
             (push current-file files))
           (setq current-filename new-filename)
+          (setq occurrences (make-hash-table :test 'equal))
           (setq current-file
                 (make-rere-file-diff
                  :filename current-filename
@@ -397,12 +399,9 @@ Return structured representation of the diff."
                     (rere-hunk-header current-hunk)
                     :old-line ol
                     :new-line nl
-                    :hash (md5
-                           (format "%s:%s:%s:%s"
-                                   current-filename
-                                   (or ol "")
-                                   (or nl "")
-                                   content)))))
+                    :hash (rere--line-identity
+                           current-filename type content
+                           occurrences))))
           (push dl (rere-hunk-lines current-hunk))))))
     ;; finalize last hunk/file
     (when current-hunk
@@ -415,6 +414,51 @@ Return structured representation of the diff."
              (rere-file-diff-hunks current-file)))
       (push current-file files))
     (nreverse files)))
+
+(defun rere--line-identity (file type content occurrences)
+  "Return a stable identity hash for a diff line.
+FILE, TYPE and CONTENT describe the line.  OCCURRENCES is a
+per-file hash table counting lines already seen with the same
+type and content, so identical lines stay distinguishable.
+
+Line numbers are deliberately left out: editing an unrelated
+part of the file shifts them, which must not invalidate the
+review state of lines that did not change."
+  (let* ((key (cons type content))
+         (n (gethash key occurrences 0)))
+    (puthash key (1+ n) occurrences)
+    (md5 (format "%s\0%s\0%d\0%s" file type n content))))
+
+(defun rere--legacy-line-hash (dl)
+  "Return the line-number based hash used by older rere versions for DL."
+  (md5 (format "%s:%s:%s:%s"
+               (rere-diff-line-file dl)
+               (or (rere-diff-line-old-line dl) "")
+               (or (rere-diff-line-new-line dl) "")
+               (rere-diff-line-content dl))))
+
+(defun rere--migrate-state (table)
+  "Translate legacy hashes in TABLE to current line identities.
+Return TABLE, updated in place."
+  (when (and table (> (hash-table-count table) 0))
+    (let ((known (make-hash-table :test 'equal))
+          (legacy (make-hash-table :test 'equal)))
+      (dolist (file rere--diff-files)
+        (dolist (hunk (rere-file-diff-hunks file))
+          (dolist (dl (rere-hunk-lines hunk))
+            (puthash (rere-diff-line-hash dl) t known)
+            (puthash (rere--legacy-line-hash dl)
+                     (rere-diff-line-hash dl) legacy))))
+      (let ((stale nil))
+        (maphash (lambda (k _v)
+                   (unless (gethash k known)
+                     (push k stale)))
+                 table)
+        (dolist (k stale)
+          (remhash k table)
+          (when-let* ((new (gethash k legacy)))
+            (puthash new t table))))))
+  table)
 
 (defun rere--added-highlight-face ()
   "Return face for added word highlights."
@@ -2137,6 +2181,8 @@ Only works during an interactive git rebase."
       (setq rere--flagged (rere--load-flagged-state)))
     (setq rere--diff-files
           (rere--parse-diff (rere--get-raw-diff)))
+    (rere--migrate-state rere--reviewed)
+    (rere--migrate-state rere--flagged)
     (setq rere--diffstat-cache nil)
     (rere--render-buffer)
     (or (rere--goto-first-pending)

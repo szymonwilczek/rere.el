@@ -409,6 +409,111 @@ index 0000000..1111111 100644
         (should-not
          (gethash hash rere--reviewed))))))
 
+;;;; Line identity tests
+
+(defconst rere-test--shift-diff-before
+  "diff --git a/k.el b/k.el
+index 0000000..1111111 100644
+--- a/k.el
++++ b/k.el
+@@ -1,2 +1,6 @@
++;; comment line one
++;; comment line two
+ ctx
++(code-one)
+ ctx2
++(code-two)
+"
+  "Diff with a comment and two code lines.")
+
+(defconst rere-test--shift-diff-after
+  "diff --git a/k.el b/k.el
+index 0000000..1111111 100644
+--- a/k.el
++++ b/k.el
+@@ -1,2 +1,5 @@
++;; reworded comment
+ ctx
++(code-one)
+ ctx2
++(code-two)
+"
+  "Same diff after shortening the comment, shifting line numbers.")
+
+(defun rere-test--line-by-content (files content)
+  "Return the first diff line in FILES whose content is CONTENT."
+  (cl-loop for file in files
+           thereis (cl-loop for hunk in (rere-file-diff-hunks file)
+                            thereis (cl-find content
+                                             (rere-hunk-lines hunk)
+                                             :key #'rere-diff-line-content
+                                             :test #'equal))))
+
+(ert-deftest rere-test-identity-survives-line-shift ()
+  "Editing an earlier line must not change identity of later lines."
+  (let* ((before (rere--parse-diff rere-test--shift-diff-before))
+         (after (rere--parse-diff rere-test--shift-diff-after))
+         (b1 (rere-test--line-by-content before "(code-one)"))
+         (a1 (rere-test--line-by-content after "(code-one)")))
+    (should-not (equal (rere-diff-line-new-line b1)
+                       (rere-diff-line-new-line a1)))
+    (should (equal (rere-diff-line-hash b1)
+                   (rere-diff-line-hash a1)))))
+
+(ert-deftest rere-test-identity-distinguishes-duplicates ()
+  "Identical lines in one file get distinct identities."
+  (let* ((files (rere--parse-diff
+                 "diff --git a/d.el b/d.el
+--- a/d.el
++++ b/d.el
+@@ -1,1 +1,3 @@
++}
+ x
++}
+"))
+         (lines (cl-remove-if-not
+                 #'rere--reviewable-p
+                 (rere-hunk-lines
+                  (car (rere-file-diff-hunks (car files)))))))
+    (should (= (length lines) 2))
+    (should-not (equal (rere-diff-line-hash (nth 0 lines))
+                       (rere-diff-line-hash (nth 1 lines))))))
+
+(ert-deftest rere-test-refresh-keeps-review-after-line-shift ()
+  "Reviewed lines stay reviewed after an unrelated edit above them."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--shift-diff-before)
+          rere--reviewed (make-hash-table :test 'equal)
+          rere--flagged (make-hash-table :test 'equal))
+    (rere--accept-line
+     (rere-test--line-by-content rere--diff-files "(code-one)"))
+    (cl-letf (((symbol-function 'rere--get-raw-diff)
+               (lambda () rere-test--shift-diff-after))
+              ((symbol-function 'rere--save-reviewed-state-now)
+               #'ignore))
+      (rere-refresh))
+    (should (rere--reviewed-p
+             (rere-test--line-by-content rere--diff-files
+                                         "(code-one)")))
+    (should (= rere--reviewed-count 1))))
+
+(ert-deftest rere-test-migrate-legacy-state ()
+  "State saved with line-number hashes is translated on load."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--shift-diff-before))
+    (let* ((dl (rere-test--line-by-content rere--diff-files
+                                           "(code-one)"))
+           (table (make-hash-table :test 'equal)))
+      (puthash (rere--legacy-line-hash dl) t table)
+      (puthash "unknown-hash" t table)
+      (rere--migrate-state table)
+      (should (= (hash-table-count table) 1))
+      (should (gethash (rere-diff-line-hash dl) table)))))
+
 ;;;; Git dir helper tests
 
 (ert-deftest rere-test-git-dir-returns-path ()
