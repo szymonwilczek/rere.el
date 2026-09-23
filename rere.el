@@ -2114,7 +2114,7 @@ If on a file header or diff line, toggle that file."
 (defun rere-toggle-focus ()
   "Toggle focus mode on the file at point.
 When active, only changes for this file are displayed.
-Pressing 'f' again restores the full view."
+Pressing `f' again restores the full view."
   (interactive)
   (if rere--focused-file
       (progn
@@ -2143,7 +2143,7 @@ Pressing 'f' again restores the full view."
 
 (defun rere-toggle-flag ()
   "Toggle flag on diff line at point or in active region.
-Flagged lines move to the 'Stinky changes' section and must be
+Flagged lines move to the \"Stinky changes\" section and must be
 resolved before 100% review can be reached."
   (interactive)
   (let* ((in-visual (and (bound-and-true-p evil-mode)
