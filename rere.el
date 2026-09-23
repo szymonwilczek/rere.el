@@ -1459,16 +1459,19 @@ MAX-LEN and MAX-DIGITS are the column widths."
          (propertize "  All changes reviewed.\n"
                      'font-lock-face
                      'magit-dimmed))
-      (rere--insert-diff-lines #'rere--pending-p))
-    (insert "\n")))
+      (rere--insert-diff-lines #'rere--pending-p)))
+  ;; separators live outside the category sections, so a collapsed
+  ;; section is exactly one line and a lazily washed body lands
+  ;; directly below its heading
+  (insert "\n"))
 
 (defun rere--insert-stinky-section ()
   "Insert the Stinky (flagged) changes section if any lines are flagged."
   (when (> (rere--flagged-count) 0)
     (magit-insert-section (rere-stinky nil nil)
       (magit-insert-heading (rere--category-heading 'rere-stinky))
-      (rere--insert-diff-lines #'rere--flagged-p)
-      (insert "\n"))))
+      (rere--insert-diff-lines #'rere--flagged-p))
+    (insert "\n")))
 
 (defun rere--wash-reviewed ()
   "Insert the body of the Reviewed section when it is first expanded."
@@ -1476,15 +1479,20 @@ MAX-LEN and MAX-DIGITS are the column widths."
   (rere--markerize magit-insert-section--parent))
 
 (defun rere--insert-reviewed-section ()
-  "Insert the Reviewed changes section."
+  "Insert the Reviewed changes section followed by a separator."
+  (rere--insert-reviewed-section-1)
+  (insert "\n"))
+
+(defun rere--insert-reviewed-section-1 ()
+  "Insert the Reviewed changes section.
+When collapsed, its body is only inserted once it is expanded."
   (let ((hidden (eq (rere--visibility-of '(rere-reviewed)) 'hide)))
     (magit-insert-section
         (rere-reviewed nil hidden
                        :washer (when hidden #'rere--wash-reviewed))
       (magit-insert-heading (rere--category-heading 'rere-reviewed))
       (unless hidden
-        (rere--insert-diff-lines #'rere--reviewed-p))
-      (insert "\n"))))
+        (rere--insert-diff-lines #'rere--reviewed-p)))))
 
 (defun rere--visible-files ()
   "Return the files shown in the buffer, honoring focus mode."
@@ -1878,7 +1886,16 @@ If on a file header or diff line, toggle that file."
       (when (and (oref target-sec hidden)
                  (oref target-sec content)
                  (> (point) (oref target-sec content)))
-        (goto-char (oref target-sec start))))))
+        (goto-char (oref target-sec start)))
+      ;; drop the collapsed Reviewed body, exactly like a full render
+      ;; does; it is washed again when expanded
+      (when (and (eq (oref target-sec type) 'rere-reviewed)
+                 (oref target-sec hidden))
+        (let ((inhibit-read-only t))
+          (rere--replace-section target-sec
+                                 #'rere--insert-reviewed-section-1))
+        (goto-char (oref (rere--root-child 'rere-reviewed) start))
+        (rere--update-line-highlight)))))
 
 (defun rere-toggle-focus ()
   "Toggle focus mode on the file at point.

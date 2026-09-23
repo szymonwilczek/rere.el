@@ -639,7 +639,7 @@ index 0000000..1111111 100644
       (delete-directory tmp-dir t))))
 
 (ert-deftest rere-test-reviewed-section-hidden-overlay ()
-  "Reviewed section is hidden with invisible overlay by default."
+  "Reviewed section is collapsed and not rendered by default."
   (with-temp-buffer
     (rere-mode)
     (setq rere--diff-files
@@ -653,8 +653,9 @@ index 0000000..1111111 100644
                             (oref magit-root-section children)
                             :key (lambda (s) (oref s type)))))
       (should (oref rev-sec hidden))
-      (should (get-char-property (oref rev-sec content)
-                                 'invisible)))))
+      ;; the body is not rendered until the section is expanded
+      (should (= (oref rev-sec content) (oref rev-sec end)))
+      (should-not (invisible-p (oref rev-sec end))))))
 
 (defun rere-test--visible-lines ()
   "Return the visible lines of the current buffer as a list of strings."
@@ -712,6 +713,34 @@ index 0000000..1111111 100644
     (should (oref (magit-current-section) hidden))
     (should-not (member "  (removed-call)"
                         (rere-test--visible-lines)))))
+
+(ert-deftest rere-test-reviewed-heading-single-line-after-toggle ()
+  "Reviewed body starts right below its heading and folds to one line."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere--accept-line
+     (nth 1 (rere-hunk-lines
+             (car (rere-file-diff-hunks (car rere--diff-files))))))
+    (rere--render-buffer)
+    (let ((collapsed (rere-test--visible-lines)))
+      (should (equal (cadr (member "Reviewed changes (1)" collapsed))
+                     ""))
+      (goto-char (point-min))
+      (re-search-forward "^Reviewed changes")
+      (rere-toggle-section)
+      (should (equal (cadr (member "Reviewed changes (1)"
+                                   (rere-test--visible-lines)))
+                     "  modified   foo.el"))
+      (goto-char (point-min))
+      (re-search-forward "^Reviewed changes")
+      (rere-toggle-section)
+      (should (equal (rere-test--visible-lines) collapsed))
+      ;; a later render with the section expanded looks the same as
+      ;; the lazily washed body
+      (rere-toggle-section)
+      (let ((washed (rere-test--visible-lines)))
+        (rere--render-buffer)
+        (should (equal (rere-test--visible-lines) washed))))))
 
 ;;;; Context and diff navigation tests
 
@@ -1394,7 +1423,11 @@ index 0000000..1111111 100644
                     (and sec (oref sec type))
                     (and sec (marker-position (oref sec start))))
               props))
-      (setq pos (next-property-change pos nil (point-max))))
+      (setq pos (cl-loop for prop in '(font-lock-face rere-line-hash
+                                       rere-pending rere-flagged
+                                       rere-reviewable magit-section)
+                         minimize (next-single-property-change
+                                   pos prop nil (point-max)))))
     (list (buffer-substring-no-properties (point-min) (point-max))
           (nreverse props)
           (rere-test--visible-lines)
@@ -1467,6 +1500,8 @@ index 0000000..1111111 100644
                    (rere-toggle-flag)))
               (4 (when (rere-test--random-line 'rere-reviewable)
                    (rere-unaccept)))
+              (5 (when (rere-test--random-heading 'rere-reviewed)
+                   (rere-toggle-section)))
               (6 (when (rere-test--random-heading 'rere-file-section)
                    (rere-toggle-section)))
               (7 (when (rere-test--random-heading 'rere-hunk-section)
