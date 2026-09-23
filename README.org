@@ -46,20 +46,27 @@ you review code as well, go ahead - that's why this package is public.
 - *Virtual Staging Area:* Review diffs line-by-line, hunk-by-hunk, or
   file-by-file in memory without touching the index or working copy.
 - *Persistent Review State:* Remembers reviewed and flagged lines across
-  buffer reloads and rebase sessions via content-addressed hashing.
+  buffer reloads and rebase sessions via content-addressed hashing.  A
+  line is identified by its file, content and occurrence, so edits
+  elsewhere in the file do not reset it.
+- *Magit-Style Partial Review:* Like Magit's staged and unstaged diffs,
+  pending changes are shown on top of the already reviewed ones: reviewed
+  lines stay visible as context around what is left to review.
+- *Line Numbers:* Old and new file line numbers next to every diff line.
 - *Diffstat Overview:* Per-file summary of additions, removals, and review
   progress displayed at the top of the buffer.
 - *Word-Level Refinement:* Highlights word-level differences within
   modified lines for precise change identification.
 - *Stinky Changes:* Flag suspicious lines for later review.  Flagged lines
   are collected in a dedicated /Stinky changes/ section and block 100%
-  completion until resolved.
+  completion until resolved.  Accepting a flagged line clears its flag.
 - *Focus Mode:* Narrow the view to a single file to reduce noise during
   review.
 - *Smart Accept and Undo:* Context-aware operations that act on the element
   under the cursor (line, hunk, file) or a visual region.
-- *In-Place Patching:* Single-line accepts are performed instantly via
-  overlay-based buffer patching, avoiding full redraws.
+- *Incremental Updates:* Accepting, undoing and flagging only re-render the
+  touched files, so the buffer stays responsive and in sync on diffs with
+  tens of thousands of changed lines.
 - *No Git side effects:* Passive - no =git add=, =git commit=, etc; commit SHAs
   remain intact.
 - *Magit-Native UI:* Built on =magit-section= with familiar faces, folding,
@@ -111,6 +118,7 @@ you review code as well, go ahead - that's why this package is public.
 | Key   | Command           | Action                                          |
 |-------+-------------------+-------------------------------------------------|
 | =s= / =S= | ~rere-smart-accept~ | Smart accept: line, hunk, file, or category     |
+|       |                   | in Pending or Stinky changes                    |
 | =u=     | ~rere-unaccept~     | Smart undo: line, hunk, or file back to Pending |
 | =m=     | ~rere-toggle-flag~  | Toggle flag (stinky) on line or region          |
 | =M=     | ~rere-next-flagged~ | Jump to next flagged line                       |
@@ -139,11 +147,12 @@ Visual selections are supported for =s=, =u=, and =m=.
 
 ** Options
 
-| Variable              | Default | Description                                |
-|-----------------------+---------+--------------------------------------------|
-| ~rere-buffer-name~      | ~"*rere*"~  | Buffer name used for the review buffer.    |
-| ~rere-refine-highlight~ | ~t~       | Enable word-level difference highlighting. |
-| ~rere-show-diffstat~    | ~t~       | Display per-file diffstat summary section. |
+| Variable               | Default | Description                                |
+|------------------------+---------+--------------------------------------------|
+| ~rere-buffer-name~       | ~"*rere*"~  | Buffer name used for the review buffer.    |
+| ~rere-refine-highlight~  | ~t~       | Enable word-level difference highlighting. |
+| ~rere-show-diffstat~     | ~t~       | Display per-file diffstat summary section. |
+| ~rere-show-line-numbers~ | ~t~       | Show file line numbers next to diff lines. |
 
 ** Faces
 
@@ -151,6 +160,8 @@ Visual selections are supported for =s=, =u=, and =m=.
 |----------------------+---------------------------------------|
 | ~rere-flagged-line~    | Face for flagged (stinky) diff lines. |
 | ~rere-flagged-heading~ | Face for the Stinky changes heading.  |
+| ~rere-current-line~    | Face highlighting the line at point.  |
+| ~rere-line-number~     | Face for file line numbers.           |
 
 ** License
 
