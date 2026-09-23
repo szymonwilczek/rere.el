@@ -670,9 +670,11 @@ index 0000000..1111111 100644
         (forward-line 1)))
     (nreverse lines)))
 
-(defun rere-test--setup-sample ()
-  "Render the sample diff in the current buffer with empty state."
+(defun rere-test--setup-sample (&optional no-line-numbers)
+  "Render the sample diff in the current buffer with empty state.
+With NO-LINE-NUMBERS, render without the line number gutter."
   (rere-mode)
+  (setq-local rere-show-line-numbers (not no-line-numbers))
   (setq rere--diff-files (rere--parse-diff rere-test--sample-diff)
         rere--reviewed (make-hash-table :test 'equal)
         rere--flagged (make-hash-table :test 'equal)
@@ -1197,6 +1199,45 @@ index 0000000..1111111 100644
     (should-not (member "     (message \"new\")"
                         (rere-test--category-lines "Pending review")))))
 
+;;;; Line number tests
+
+(defun rere-test--gutter-lines ()
+  "Return the diff lines of Pending review with their line-prefix."
+  (let ((lines nil))
+    (save-excursion
+      (goto-char (point-min))
+      (re-search-forward "^Pending review")
+      (while (re-search-forward "^  [-+ ]" nil t)
+        (when (get-text-property (point) 'rere-diff-line)
+          (push (concat (get-text-property (point) 'line-prefix)
+                        (buffer-substring-no-properties
+                         (line-beginning-position) (line-end-position)))
+                lines))))
+    (nreverse lines)))
+
+(ert-deftest rere-test-line-numbers-gutter ()
+  "Diff lines show old and new line numbers of their side."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (should (equal (cl-subseq (rere-test--gutter-lines) 0 5)
+                   '("1 1    (defun foo ()"
+                     "2     -  (message \"old\")"
+                     "  2   +  (message \"new\")"
+                     "  3   +  (message \"added\")"
+                     "3 4      nil)")))
+    (goto-char (point-min))
+    (search-forward "+  (message")
+    (should (equal (get-text-property 0 'face
+                                      (get-text-property (point)
+                                                         'line-prefix))
+                   '(rere-line-number magit-diff-added)))))
+
+(ert-deftest rere-test-line-numbers-disabled ()
+  "Without line numbers diff lines have no gutter."
+  (with-temp-buffer
+    (rere-test--setup-sample t)
+    (should-not (next-single-property-change (point-min) 'line-prefix))))
+
 ;;;; 100% completion tests
 
 (ert-deftest rere-test-100-percent-banner ()
@@ -1581,12 +1622,14 @@ index 0000000..1111111 100644
                     (get-text-property pos 'rere-pending)
                     (get-text-property pos 'rere-flagged)
                     (get-text-property pos 'rere-reviewable)
+                    (get-text-property pos 'line-prefix)
                     (and sec (oref sec type))
                     (and sec (marker-position (oref sec start))))
               props))
       (setq pos (cl-loop for prop in '(font-lock-face rere-line-hash
                                        rere-pending rere-flagged
-                                       rere-reviewable magit-section)
+                                       rere-reviewable line-prefix
+                                       magit-section)
                          minimize (next-single-property-change
                                    pos prop nil (point-max)))))
     (list (buffer-substring-no-properties (point-min) (point-max))

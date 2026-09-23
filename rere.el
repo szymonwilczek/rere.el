@@ -80,6 +80,11 @@
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-show-line-numbers t
+  "Whether to show old and new file line numbers next to diff lines."
+  :type 'boolean
+  :group 'rere)
+
 (defcustom rere-show-diffstat t
   "Whether to display the file diffstat summary section."
   :type 'boolean
@@ -95,6 +100,11 @@
 (defface rere-current-line
   '((t :inherit magit-section-highlight :extend t))
   "Face highlighting the line at point."
+  :group 'rere)
+
+(defface rere-line-number
+  '((t :inherit magit-dimmed))
+  "Face for file line numbers next to diff lines."
   :group 'rere)
 
 (defface rere-flagged-heading
@@ -1529,34 +1539,77 @@ When collapsed, its body is only inserted once it is expanded."
   (dolist (file (rere--visible-files))
     (rere--insert-file-section file pred)))
 
+(defvar rere--gutter-format nil
+  "Line number format and blank column while inserting a file, or nil.")
+
+(defun rere--file-gutter-width (file)
+  "Return the number of digits of the largest line number in FILE."
+  (let ((n 1))
+    (dolist (dl (rere-hunk-lines (car (last (rere-file-diff-hunks file)))))
+      (setq n (max n
+                   (or (rere-diff-line-old-line dl) 0)
+                   (or (rere-diff-line-new-line dl) 0))))
+    (length (number-to-string n))))
+
+(defvar rere--gutter-cache (make-hash-table :test 'eq :weakness 'key)
+  "Map diff lines to (FACE . GUTTER), as rendering them is costly.")
+
+(defun rere--gutter-string (dl face)
+  "Return the gutter of DL with FACE behind it, see `rere--gutter'."
+  (let ((cached (gethash dl rere--gutter-cache)))
+    (if (and cached (eq (car cached) face))
+        (cdr cached)
+      (let ((gutter (propertize (rere--gutter dl) 'face
+                                (list 'rere-line-number face))))
+        (puthash dl (cons face gutter) rere--gutter-cache)
+        gutter))))
+
+(defun rere--gutter (dl)
+  "Return the line number gutter for diff line DL.
+Added and removed lines have only the number of the side they exist
+on, also when they are shown as context.  The gutter is displayed as
+`line-prefix', so it is not part of the buffer text."
+  (let ((fmt (car rere--gutter-format))
+        (blank (cdr rere--gutter-format))
+        (old (rere-diff-line-old-line dl))
+        (new (rere-diff-line-new-line dl)))
+    (concat (if old (format fmt old) blank)
+            " "
+            (if new (format fmt new) blank)
+            " ")))
+
 (defun rere--insert-file-section (file pred)
   "Insert the section of FILE showing its lines matching PRED.
 Insert nothing if no line of FILE matches."
   (when-let* ((file-lines (rere--collect-file-lines file pred)))
-    (magit-insert-section
-        (rere-file-section file nil)
-      (magit-insert-heading
-        (propertize
-         (format "  modified   %s\n"
-                 (rere-file-diff-filename file))
-         'font-lock-face
-         'magit-diff-file-heading))
-      (dolist (hunk-data file-lines)
-        (let ((hunk (car hunk-data))
-              (lines (cdr hunk-data)))
-          (magit-insert-section
-              (rere-hunk-section hunk nil)
-            (magit-insert-heading
-              (propertize
-               (concat "  "
-                       (rere-hunk-header hunk)
-                       "\n")
-               'font-lock-face
-               'magit-diff-hunk-heading))
-            (insert (mapconcat (lambda (dl)
-                                 (rere--line-string
-                                  dl (rere--line-display dl pred)))
-                               lines ""))))))))
+    (let ((rere--gutter-format
+           (when rere-show-line-numbers
+             (let ((w (rere--file-gutter-width file)))
+               (cons (format "%%%dd" w) (make-string w ?\s))))))
+      (magit-insert-section
+          (rere-file-section file nil)
+        (magit-insert-heading
+          (propertize
+           (format "  modified   %s\n"
+                   (rere-file-diff-filename file))
+           'font-lock-face
+           'magit-diff-file-heading))
+        (dolist (hunk-data file-lines)
+          (let ((hunk (car hunk-data))
+                (lines (cdr hunk-data)))
+            (magit-insert-section
+                (rere-hunk-section hunk nil)
+              (magit-insert-heading
+                (propertize
+                 (concat "  "
+                         (rere-hunk-header hunk)
+                         "\n")
+                 'font-lock-face
+                 'magit-diff-hunk-heading))
+              (insert (mapconcat (lambda (dl)
+                                   (rere--line-string
+                                    dl (rere--line-display dl pred)))
+                                 lines "")))))))))
 
 (defun rere--line-display (dl pred)
   "Return how diff line DL is shown in a category selecting PRED.
@@ -1642,6 +1695,10 @@ every buffer insertion has to adjust all section markers."
        `(font-lock-face ,face
                         rere-line-hash ,hash
                         rere-diff-line ,dl
+                        ,@(when rere--gutter-format
+                            ;; display property costs no extra text interval:
+                            ;; every line has its own already
+                            `(line-prefix ,(rere--gutter-string dl face)))
                         ,@(when reviewable '(rere-reviewable t))
                         ,@(when pending '(rere-pending t))
                         ,@(when flagged '(rere-flagged t)))
