@@ -1223,16 +1223,18 @@ With NO-LINE-NUMBERS, render without the line number gutter."
 (ert-deftest rere-test-accept-keeps-screen-row ()
   "Accepting a line keeps the next line on the same screen row."
   (rere-test--with-window-at-row 5
-                                 (rere-smart-accept)
-                                 (should (equal (rere-test--content-at-point) "    (new-other)"))
-                                 (should (= (rere-test--screen-row) 5))))
+    (rere-smart-accept)
+    (should (equal (rere-test--content-at-point)
+                   "    (new-other)"))
+    (should (= (rere-test--screen-row) 5))))
 
 (ert-deftest rere-test-full-render-keeps-screen-row ()
   "A full render keeps the line at point on the same screen row."
   (rere-test--with-window-at-row 7
-                                 (rere-toggle-context)
-                                 (should (equal (rere-test--content-at-point) "    (new-call 1 10)"))
-                                 (should (= (rere-test--screen-row) 7))))
+    (rere-toggle-context)
+    (should (equal (rere-test--content-at-point)
+                   "    (new-call 1 10)"))
+    (should (= (rere-test--screen-row) 7))))
 
 ;;;; Context trimming tests
 
@@ -1728,6 +1730,11 @@ With NO-LINE-NUMBERS, render without the line number gutter."
         (oref section hidden)
         (mapcar #'rere-test--section-tree (oref section children))))
 
+(defconst rere-test--snapshot-props
+  '(font-lock-face rere-line-hash rere-pending rere-flagged
+                   rere-reviewable line-prefix magit-section)
+  "Text properties whose changes split a buffer snapshot.")
+
 (defun rere-test--snapshot ()
   "Return a comparable snapshot of the current rere buffer."
   (let ((props nil)
@@ -1744,10 +1751,7 @@ With NO-LINE-NUMBERS, render without the line number gutter."
                     (and sec (oref sec type))
                     (and sec (marker-position (oref sec start))))
               props))
-      (setq pos (cl-loop for prop in '(font-lock-face rere-line-hash
-                                                      rere-pending rere-flagged
-                                                      rere-reviewable line-prefix
-                                                      magit-section)
+      (setq pos (cl-loop for prop in rere-test--snapshot-props
                          minimize (next-single-property-change
                                    pos prop nil (point-max)))))
     (list (buffer-substring-no-properties (point-min) (point-max))
