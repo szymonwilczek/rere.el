@@ -1036,6 +1036,77 @@ index 0000000..1111111 100644
     ;; total 3 lines accepted
     (should (= (hash-table-count rere--reviewed) 3))))
 
+;;;; Stinky acceptance tests
+
+(defun rere-test--flag-first-lines (n)
+  "Flag the first N reviewable lines of the diff."
+  (let ((count 0))
+    (dolist (file rere--diff-files)
+      (dolist (hunk (rere-file-diff-hunks file))
+        (dolist (dl (rere-hunk-lines hunk))
+          (when (and (< count n) (rere--reviewable-p dl))
+            (rere--flag-line dl)
+            (cl-incf count)))))))
+
+(ert-deftest rere-test-accept-flagged-line ()
+  "Pressing s on a stinky line accepts it."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere-test--flag-first-lines 2)
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (re-search-forward "^Stinky changes (2)")
+    (goto-char (text-property-any (point-min) (point-max)
+                                  'rere-flagged t))
+    (let ((dl (rere--section-diff-line)))
+      (rere-smart-accept)
+      (should (rere--reviewed-p dl))
+      (should-not (rere--flagged-p dl)))
+    (should (= (rere--flagged-count) 1))
+    ;; point stays in Stinky on the remaining flagged line
+    (should (get-text-property (point) 'rere-flagged))))
+
+(ert-deftest rere-test-accept-stinky-heading ()
+  "Pressing s on the Stinky changes heading accepts all flagged lines."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere-test--flag-first-lines 2)
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (re-search-forward "^Stinky changes")
+    (rere-smart-accept)
+    (should (= (rere--flagged-count) 0))
+    (should (= rere--reviewed-count 2))
+    (goto-char (point-min))
+    (should-not (re-search-forward "^Stinky changes" nil t))))
+
+(ert-deftest rere-test-accept-stinky-hunk-only-flagged ()
+  "Accepting a hunk under Stinky accepts only its flagged lines."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere-test--flag-first-lines 1)
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (re-search-forward "^Stinky changes")
+    (re-search-forward "^  @@")
+    (rere-smart-accept)
+    (should (= rere--reviewed-count 1))
+    (should (= (rere--flagged-count) 0))
+    (should (= (length (rere--pending-diff-lines)) 3))))
+
+(ert-deftest rere-test-accept-pending-hunk-skips-flagged ()
+  "Accepting a hunk under Pending leaves its flagged lines alone."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere-test--flag-first-lines 1)
+    (rere--render-buffer)
+    (goto-char (point-min))
+    (re-search-forward "^Pending review")
+    (re-search-forward "^  @@")
+    (rere-smart-accept)
+    (should (= (rere--flagged-count) 1))
+    (should (= rere--reviewed-count 2))))
+
 ;;;; 100% completion tests
 
 (ert-deftest rere-test-100-percent-banner ()
@@ -1487,7 +1558,7 @@ index 0000000..1111111 100644
                #'ignore))
       (rere--render-buffer)
       (dotimes (step 150)
-        (let ((op (random 8)))
+        (let ((op (random 9)))
           (ignore-errors
             (pcase op
               (0 (when (rere-test--random-line 'rere-pending)
@@ -1505,7 +1576,9 @@ index 0000000..1111111 100644
               (6 (when (rere-test--random-heading 'rere-file-section)
                    (rere-toggle-section)))
               (7 (when (rere-test--random-heading 'rere-hunk-section)
-                   (rere-unaccept))))))
+                   (rere-unaccept)))
+              (8 (when (rere-test--random-line 'rere-flagged)
+                   (rere-smart-accept))))))
         (let ((incremental (rere-test--snapshot))
               (full (rere-test--full-render-snapshot
                      (current-buffer))))

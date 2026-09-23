@@ -794,33 +794,42 @@ when `rere--diff-files' is a different list than last time."
             (push dl lines)))))
     (nreverse lines)))
 
-(defun rere--region-elements (beg end)
+(defun rere--region-elements (beg end &optional by-category)
   "Collect all reviewable diff lines between BEG and END.
-Expands any hunks or file sections intersecting the region."
+Expands any hunks or file sections intersecting the region.  With
+BY-CATEGORY, an expanded hunk or file only contributes the lines that
+belong to the category it is shown in."
   (let ((b (min beg end))
         (e (max beg end))
+        (seen (make-hash-table :test 'eq))
         (lines '()))
-    (save-excursion
-      (goto-char b)
-      (while (< (point) e)
-        (if-let* ((dl (get-text-property (point) 'rere-diff-line)))
-            (unless (memq dl lines)
-              (push dl lines))
-          (when-let* ((section (magit-current-section))
-                      (val (and (= (oref section start)
-                                   (line-beginning-position))
-                                (oref section value))))
-            (cond
-             ((rere-hunk-p val)
-              (dolist (dl (rere-hunk-lines val))
-                (unless (memq dl lines)
+    (cl-flet ((add (dl)
+                (unless (gethash dl seen)
+                  (puthash dl t seen)
                   (push dl lines))))
-             ((rere-file-diff-p val)
-              (dolist (h (rere-file-diff-hunks val))
-                (dolist (dl (rere-hunk-lines h))
-                  (unless (memq dl lines)
-                    (push dl lines))))))))
-        (forward-line 1)))
+      (save-excursion
+        (goto-char b)
+        (while (< (point) e)
+          (if-let* ((dl (get-text-property (point) 'rere-diff-line)))
+              (add dl)
+            (when-let* ((section (magit-current-section))
+                        (val (and (= (oref section start)
+                                     (line-beginning-position))
+                                  (oref section value))))
+              (let ((pred (or (and by-category
+                                   (rere--category-pred
+                                    (rere--section-category section)))
+                              #'identity)))
+                (dolist (dl (cond
+                             ((rere-hunk-p val) (rere-hunk-lines val))
+                             ((rere-file-diff-p val)
+                              (cl-mapcan (lambda (h)
+                                           (copy-sequence
+                                            (rere-hunk-lines h)))
+                                         (rere-file-diff-hunks val)))))
+                  (when (funcall pred dl)
+                    (add dl))))))
+          (forward-line 1))))
     (nreverse lines)))
 
 ;;;; Section visibility
@@ -1723,13 +1732,30 @@ EXCLUDE is a hash table of line hashes that are being changed."
     (let ((section (magit-current-section)))
       (cons (oref section start) (oref section end)))))
 
+(defun rere--acceptable-p (diff-line)
+  "Return non-nil if DIFF-LINE can be accepted (pending or flagged)."
+  (or (rere--pending-p diff-line)
+      (rere--flagged-p diff-line)))
+
+(defun rere--section-acceptable-lines (section lines)
+  "Return the LINES that accepting on SECTION's heading should accept.
+Only lines of the category SECTION is shown in are considered: pending
+lines under Pending review (or outside any category, e.g. in the
+diffstat), flagged lines under Stinky changes."
+  (let ((pred (pcase (rere--section-category section)
+                ((or 'rere-pending 'nil) #'rere--pending-p)
+                ('rere-stinky #'rere--flagged-p))))
+    (and pred (cl-remove-if-not pred lines))))
+
 (defun rere-smart-accept ()
   "Smart accept: region, category, file, hunk, or line at point.
 In visual mode or when region is active, accept selected lines.
 On Pending review heading, accept all pending changes.
+On Stinky changes heading, accept all flagged changes.
 On a file heading, accept entire file.
 On a hunk heading, accept entire hunk.
-On a diff line, accept that line."
+On a diff line, accept that line.
+Flagged (stinky) lines can be accepted just like pending ones."
   (interactive)
   (let* ((in-visual (and (bound-and-true-p evil-mode)
                          (evil-visual-state-p)))
@@ -1742,15 +1768,15 @@ On a diff line, accept that line."
      (has-region
       (setq to-accept
             (cl-remove-if-not
-             #'rere--pending-p
+             #'rere--acceptable-p
              (rere--region-elements
-              (region-beginning) (region-end))))
+              (region-beginning) (region-end) t)))
       (when in-visual
         (evil-normal-state))
       (deactivate-mark))
      ((when-let* ((dl (rere--section-diff-line)))
-        (unless (rere--pending-p dl)
-          (user-error "[rere] Line at point is not pending"))
+        (unless (rere--acceptable-p dl)
+          (user-error "[rere] Line at point is not pending or flagged"))
         (setq to-accept (list dl))
         t))
      (t
@@ -1759,21 +1785,22 @@ On a diff line, accept that line."
           (cond
            ((eq (oref section type) 'rere-pending)
             (setq to-accept (rere--pending-diff-lines)))
+           ((eq (oref section type) 'rere-stinky)
+            (setq to-accept (rere--flagged-diff-lines)))
            ((rere-file-diff-p val)
             (setq to-accept
-                  (cl-remove-if-not
-                   #'rere--pending-p
+                  (rere--section-acceptable-lines
+                   section
                    (cl-mapcan
                     (lambda (h)
                       (copy-sequence (rere-hunk-lines h)))
                     (rere-file-diff-hunks val)))))
            ((rere-hunk-p val)
             (setq to-accept
-                  (cl-remove-if-not
-                   #'rere--pending-p
-                   (copy-sequence (rere-hunk-lines val))))))))))
+                  (rere--section-acceptable-lines
+                   section (rere-hunk-lines val)))))))))
     (unless to-accept
-      (user-error "[rere] No pending changes to accept"))
+      (user-error "[rere] No pending or flagged changes to accept"))
     (let ((target-hash (rere--next-target-after
                         (car bounds) (cdr bounds)
                         (rere--hash-set to-accept))))
