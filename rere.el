@@ -811,7 +811,8 @@ belong to the category it is shown in."
         (goto-char b)
         (while (< (point) e)
           (if-let* ((dl (get-text-property (point) 'rere-diff-line)))
-              (add dl)
+              (when (get-text-property (point) 'rere-reviewable)
+                (add dl))
             (when-let* ((section (magit-current-section))
                         (val (and (= (oref section start)
                                      (line-beginning-position))
@@ -1252,12 +1253,23 @@ Return t if found, nil otherwise."
             (rere-diff-line-hash value))))))
 
 (defun rere--goto-line-hash (hash)
-  "Move point to the line with HASH.  Return t if found."
+  "Move point to the line with HASH.  Return t if found.
+A line can be shown in several categories, e.g. as context around
+pending lines and as a change under Reviewed changes; prefer the
+occurrence where it is a reviewable change."
   (when hash
-    (when-let* ((pos (text-property-any (point-min) (point-max)
-                                        'rere-line-hash hash)))
-      (goto-char pos)
-      t)))
+    (let ((first (text-property-any (point-min) (point-max)
+                                    'rere-line-hash hash))
+          (pos nil))
+      (setq pos first)
+      (while (and pos (not (get-text-property pos 'rere-reviewable)))
+        (setq pos (text-property-any
+                   (save-excursion (goto-char pos)
+                                   (line-beginning-position 2))
+                   (point-max) 'rere-line-hash hash)))
+      (when-let* ((target (or pos first)))
+        (goto-char target)
+        t))))
 
 (defun rere--goto-section-path (path)
   "Move point to section identified by PATH.
@@ -1541,37 +1553,65 @@ Insert nothing if no line of FILE matches."
                        "\n")
                'font-lock-face
                'magit-diff-hunk-heading))
-            (insert (mapconcat #'rere--line-string lines ""))))))))
+            (insert (mapconcat (lambda (dl)
+                                 (rere--line-string
+                                  dl (rere--line-display dl pred)))
+                               lines ""))))))))
+
+(defun rere--line-display (dl pred)
+  "Return how diff line DL is shown in a category selecting PRED.
+The result is one of:
+  `change'   a line of the category, shown as a diff line;
+  `context'  shown as an unchanged line;
+  `flagged'  a stinky line inside a Pending hunk, shown as flagged;
+  nil        not shown.
+Like Magit's staged and unstaged diffs, each category is a diff
+against a base that already contains the reviewed changes: a
+reviewed added line is context around pending lines and a reviewed
+removed line is gone, while in Reviewed changes a pending removed
+line is still context and a pending added line does not exist yet."
+  (let ((type (rere-diff-line-type dl)))
+    (cond
+     ((eq type 'context) (and rere--show-context 'context))
+     ((funcall pred dl) 'change)
+     ((not rere--show-context) nil)
+     ((and (eq pred #'rere--pending-p) (rere--flagged-p dl)) 'flagged)
+     ((eq (and (rere--reviewed-p dl) t) (eq type 'added)) 'context))))
 
 (defun rere--collect-file-lines (file-diff pred)
   "Collect lines from FILE-DIFF matching PRED with surrounding context.
-Return alist of (hunk . lines-to-render)."
+Return alist of (hunk . lines-to-render), see `rere--line-display'.
+Hunks without any line matching PRED are omitted."
   (let ((result '()))
     (dolist (hunk (rere-file-diff-hunks file-diff))
       (let ((lines '())
             (has-matching nil))
         (dolist (dl (rere-hunk-lines hunk))
-          (cond
-           ((funcall pred dl)
-            (setq has-matching t)
-            (push dl lines))
-           ((and rere--show-context
-                 (eq (rere-diff-line-type dl) 'context))
-            (push dl lines))))
+          (when-let* ((kind (rere--line-display dl pred)))
+            (when (eq kind 'change)
+              (setq has-matching t))
+            (push dl lines)))
         (when has-matching
           (push (cons hunk (nreverse lines)) result))))
     (nreverse result)))
 
-(defun rere--insert-single-line (dl)
-  "Insert a single diff line DL with proper face and word refinement."
-  (insert (rere--line-string dl)))
+(defun rere--insert-single-line (dl &optional kind)
+  "Insert a single diff line DL with proper face and word refinement.
+KIND is the display kind from `rere--line-display'."
+  (insert (rere--line-string dl kind)))
 
-(defun rere--line-string (dl)
+(defun rere--line-string (dl &optional kind)
   "Return diff line DL as propertized text, including the newline.
+KIND is the display kind from `rere--line-display', defaulting to
+`change'.  Only `change' lines are reviewable, i.e. stops for
+navigation and region operations.
 Lines are built as strings so that a whole hunk is inserted at once:
 every buffer insertion has to adjust all section markers."
-  (let* ((flagged (rere--flagged-p dl))
-         (type (rere-diff-line-type dl))
+  (let* ((kind (or kind 'change))
+         (flagged (and (memq kind '(change flagged)) (rere--flagged-p dl)))
+         (type (if (eq kind 'context)
+                   'context
+                 (rere-diff-line-type dl)))
          (face (cond
                 (flagged 'rere-flagged-line)
                 ((eq type 'added) 'magit-diff-added)
@@ -1592,8 +1632,8 @@ every buffer insertion has to adjust all section markers."
                        (when rere-refine-highlight
                          (rere-diff-line-highlights dl))))
          (hash (rere-diff-line-hash dl))
-         (reviewable (rere--reviewable-p dl))
-         (pending (rere--pending-p dl)))
+         (reviewable (and (eq kind 'change) (rere--reviewable-p dl)))
+         (pending (and reviewable (rere--pending-p dl))))
     ;; diff lines are plain text inside their hunk section:
     ;; creating a section object per line is the dominant cost for large diffs
     (let ((str (concat "  " prefix content "\n")))

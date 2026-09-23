@@ -1056,7 +1056,7 @@ index 0000000..1111111 100644
     (rere--render-buffer)
     (goto-char (point-min))
     (re-search-forward "^Stinky changes (2)")
-    (goto-char (text-property-any (point-min) (point-max)
+    (goto-char (text-property-any (point) (point-max)
                                   'rere-flagged t))
     (let ((dl (rere--section-diff-line)))
       (rere-smart-accept)
@@ -1106,6 +1106,96 @@ index 0000000..1111111 100644
     (rere-smart-accept)
     (should (= (rere--flagged-count) 1))
     (should (= rere--reviewed-count 2))))
+
+;;;; Reviewed context tests
+
+(defun rere-test--category-lines (heading)
+  "Return the visible lines of the category starting with HEADING."
+  (let* ((lines (rere-test--visible-lines))
+         (rest (cdr (cl-member heading lines :test #'string-prefix-p))))
+    (cl-subseq rest 0 (cl-position "" rest :test #'equal))))
+
+(ert-deftest rere-test-pending-shows-reviewed-lines-as-context ()
+  "Reviewed lines stay visible as context around pending lines."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "+  (message \"new\")")
+    (rere-smart-accept)
+    (goto-char (point-min))
+    (search-forward "-  (message \"old\")")
+    (rere-smart-accept)
+    (should (equal (cl-subseq (rere-test--category-lines "Pending review")
+                              0 6)
+                   '("  modified   foo.el"
+                     "  @@ -1,3 +1,4 @@"
+                     "   (defun foo ()"
+                     "     (message \"new\")"
+                     "  +  (message \"added\")"
+                     "     nil)")))
+    ;; context lines are not navigation stops
+    (goto-char (point-min))
+    (search-forward "     (message \"new\")")
+    (should-not (get-text-property (point) 'rere-reviewable))
+    ;; point after accepting went to the remaining pending line
+    (rere--goto-first-pending)
+    (should (equal (rere-test--content-at-point)
+                   "  (message \"added\")"))))
+
+(ert-deftest rere-test-reviewed-shows-pending-removals-as-context ()
+  "In Reviewed changes, pending removed lines are context."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "+  (message \"new\")")
+    (rere-smart-accept)
+    (goto-char (point-min))
+    (re-search-forward "^Reviewed changes")
+    (rere-toggle-section)
+    (should (equal (rere-test--category-lines "Reviewed changes")
+                   '("  modified   foo.el"
+                     "  @@ -1,3 +1,4 @@"
+                     "   (defun foo ()"
+                     "     (message \"old\")"
+                     "  +  (message \"new\")"
+                     "     nil)")))))
+
+(ert-deftest rere-test-undo-on-context-line-in-pending ()
+  "Undo on a reviewed line shown as context moves it back to Pending."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "+  (message \"new\")")
+    (rere-smart-accept)
+    (goto-char (point-min))
+    (search-forward "     (message \"new\")")
+    (rere-unaccept)
+    (should (= rere--reviewed-count 0))))
+
+(ert-deftest rere-test-flagged-line-shown-in-pending-hunk ()
+  "Flagged lines stay visible in their Pending hunk, but not as stops."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere-test--flag-first-lines 1)
+    (rere--render-buffer)
+    (let ((pending (rere-test--category-lines "Pending review")))
+      (should (member "  -  (message \"old\")" pending)))
+    (goto-char (point-min))
+    (re-search-forward "^Pending review")
+    (search-forward "-  (message \"old\")")
+    (should (get-text-property (point) 'rere-flagged))
+    (should-not (get-text-property (point) 'rere-reviewable))))
+
+(ert-deftest rere-test-context-toggle-hides-reviewed-context ()
+  "Hiding context also hides reviewed lines shown as context."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "+  (message \"new\")")
+    (rere-smart-accept)
+    (rere-toggle-context)
+    (should-not (member "     (message \"new\")"
+                        (rere-test--category-lines "Pending review")))))
 
 ;;;; 100% completion tests
 
