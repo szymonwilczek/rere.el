@@ -968,11 +968,30 @@ updated incrementally."
         rere--focused-file
         rere--show-context))
 
+(defun rere--window-row ()
+  "Return the screen row of point in the selected window, or nil.
+Return nil when the selected window does not show point."
+  (let ((w (selected-window)))
+    (when (and (eq (window-buffer w) (current-buffer))
+               (>= (point) (window-start w)))
+      (let ((row (count-screen-lines (window-start w)
+                                     (line-beginning-position) nil w)))
+        (and (< row (window-body-height w)) row)))))
+
+(defun rere--restore-window-row (row)
+  "Scroll the selected window so point is again on screen ROW.
+Replacing sections moves `window-start' to the start of the replaced
+text, far above point, and redisplay would then scroll point to the
+edge of the window.  Keeping the row keeps the view still."
+  (when (and row (eq (window-buffer) (current-buffer)))
+    (recenter row)))
+
 (defun rere--render-buffer (&optional target-hash)
   "Render the rere review buffer content.
 If TARGET-HASH is provided, move point to that line.
 Otherwise, try to preserve cursor position."
   (let ((inhibit-read-only t)
+        (row (rere--window-row))
         (saved-section-path (rere--current-section-path))
         (saved-line-hash (or target-hash
                              (rere--line-hash-at-point))))
@@ -996,7 +1015,8 @@ Otherwise, try to preserve cursor position."
     (when (rere--done-p)
       (message
        "[rere] 100%% reviewed! Press 'q' to return, then continue in Magit."))
-    (rere--restore-position saved-line-hash saved-section-path)))
+    (rere--restore-position saved-line-hash saved-section-path)
+    (rere--restore-window-row row)))
 
 (defun rere--restore-position (line-hash section-path)
   "Move point to LINE-HASH, else SECTION-PATH, else a sensible default."
@@ -1211,13 +1231,15 @@ Move point to TARGET-HASH if non-nil, otherwise keep it in place."
   (if (not (equal (rere--layout) rere--rendered-layout))
       (rere--render-buffer target-hash)
     (let ((inhibit-read-only t)
+          (row (rere--window-row))
           (saved-line-hash (or target-hash (rere--line-hash-at-point)))
           (saved-section-path (rere--current-section-path)))
       (save-excursion
         (rere--update-sections
          (delete-dups (mapcar #'rere-diff-line-file lines))))
       (setq magit-section-highlight-force-update t)
-      (rere--restore-position saved-line-hash saved-section-path))))
+      (rere--restore-position saved-line-hash saved-section-path)
+      (rere--restore-window-row row))))
 
 (defun rere--goto-pending-section ()
   "Move point to the Pending review section."

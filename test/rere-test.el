@@ -1199,6 +1199,41 @@ With NO-LINE-NUMBERS, render without the line number gutter."
     (should-not (member "     (message \"new\")"
                         (rere-test--category-lines "Pending review")))))
 
+;;;; Window position tests
+
+(defmacro rere-test--with-window-at-row (row &rest body)
+  "Show a large diff with the middle pending line on screen ROW, run BODY."
+  (declare (indent 1))
+  `(save-window-excursion
+     (let ((buf (rere-bench--setup (rere-bench--make-diff 3 20))))
+       (unwind-protect
+           (progn
+             (switch-to-buffer buf)
+             (delete-other-windows)
+             (goto-char (point-min))
+             (search-forward "(new-call 1 10)")
+             (recenter ,row)
+             ,@body)
+         (kill-buffer buf)))))
+
+(defun rere-test--screen-row ()
+  "Return the screen row of point in the selected window."
+  (count-screen-lines (window-start) (line-beginning-position)))
+
+(ert-deftest rere-test-accept-keeps-screen-row ()
+  "Accepting a line keeps the next line on the same screen row."
+  (rere-test--with-window-at-row 5
+                                 (rere-smart-accept)
+                                 (should (equal (rere-test--content-at-point) "    (new-other)"))
+                                 (should (= (rere-test--screen-row) 5))))
+
+(ert-deftest rere-test-full-render-keeps-screen-row ()
+  "A full render keeps the line at point on the same screen row."
+  (rere-test--with-window-at-row 7
+                                 (rere-toggle-context)
+                                 (should (equal (rere-test--content-at-point) "    (new-call 1 10)"))
+                                 (should (= (rere-test--screen-row) 7))))
+
 ;;;; Line number tests
 
 (defun rere-test--gutter-lines ()
@@ -1627,9 +1662,9 @@ With NO-LINE-NUMBERS, render without the line number gutter."
                     (and sec (marker-position (oref sec start))))
               props))
       (setq pos (cl-loop for prop in '(font-lock-face rere-line-hash
-                                       rere-pending rere-flagged
-                                       rere-reviewable line-prefix
-                                       magit-section)
+                                                      rere-pending rere-flagged
+                                                      rere-reviewable line-prefix
+                                                      magit-section)
                          minimize (next-single-property-change
                                    pos prop nil (point-max)))))
     (list (buffer-substring-no-properties (point-min) (point-max))
