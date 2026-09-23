@@ -10,6 +10,7 @@
 
 (require 'ert)
 (require 'rere)
+(require 'rere-bench)
 
 ;;;; Test fixtures
 
@@ -538,50 +539,53 @@ index 0000000..1111111 100644
 
 ;;;; Target finding tests
 
-(ert-deftest rere-test-find-next-target-middle ()
-  "Target finder picks next line when removing a middle line."
-  (let* ((files (rere--parse-diff rere-test--sample-diff))
-         (hunk (car (rere-file-diff-hunks (car files))))
-         (lines (cl-remove-if-not #'rere--reviewable-p
-                                  (rere-hunk-lines hunk)))
-         (target (rere--find-next-target (list (nth 0 lines))
-                                         lines)))
-    (should (equal target
-                   (rere-diff-line-hash (nth 1 lines))))))
+(defun rere-test--content-at-point ()
+  "Return the content of the diff line at point."
+  (rere-diff-line-content (rere--section-diff-line)))
 
-(ert-deftest rere-test-find-next-target-block ()
-  "Target finder picks line after block for visual accept."
-  (let* ((files (rere--parse-diff rere-test--sample-diff))
-         (hunk (car (rere-file-diff-hunks (car files))))
-         (lines (cl-remove-if-not #'rere--reviewable-p
-                                  (rere-hunk-lines hunk)))
-         (target (rere--find-next-target (list (nth 0 lines)
-                                               (nth 1 lines))
-                                         lines)))
-    (should (equal target
-                   (rere-diff-line-hash (nth 2 lines))))))
+(ert-deftest rere-test-accept-moves-to-next-line ()
+  "After accepting a line point moves to the next pending line."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere--goto-first-pending)
+    (rere-smart-accept)
+    (should (equal (rere-test--content-at-point)
+                   "  (message \"new\")"))))
 
-(ert-deftest rere-test-find-next-target-last ()
-  "Target finder picks previous line when removing last line."
-  (let* ((files (rere--parse-diff rere-test--sample-diff))
-         (hunk (car (rere-file-diff-hunks (car files))))
-         (lines (cl-remove-if-not #'rere--reviewable-p
-                                  (rere-hunk-lines hunk)))
-         (target (rere--find-next-target (list (nth 2 lines))
-                                         lines)))
-    (should (equal target
-                   (rere-diff-line-hash (nth 1 lines))))))
+(ert-deftest rere-test-accept-block-skips-to-next-hunk ()
+  "Accepting a whole hunk moves to the first pending line after it."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (rere--goto-first-pending)
+    (goto-char (oref (magit-current-section) start))
+    (rere-smart-accept)
+    (should (equal (rere-test--content-at-point) "  (removed-call)"))))
 
-(ert-deftest rere-test-find-next-target-all ()
-  "Target finder returns nil when removing all lines."
-  (let* ((files (rere--parse-diff rere-test--sample-diff))
-         (hunk (car (rere-file-diff-hunks (car files))))
-         (lines (cl-remove-if-not #'rere--reviewable-p
-                                  (rere-hunk-lines hunk)))
-         (target (rere--find-next-target lines lines)))
-    (should (null target))))
+(ert-deftest rere-test-accept-last-moves-to-previous-line ()
+  "Accepting the last pending line moves back to the previous one."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (search-forward "(removed-call)")
+    (rere-smart-accept)
+    (should (equal (rere-test--content-at-point)
+                   "  (message \"added\")"))))
 
-;;;; Toggle section tests
+(ert-deftest rere-test-undo-stays-within-reviewed ()
+  "Undoing in Reviewed moves to the next reviewed line, not Pending."
+  (with-temp-buffer
+    (rere-test--setup-sample)
+    (goto-char (point-min))
+    (re-search-forward "^Pending review")
+    (rere-smart-accept)
+    (re-search-forward "^Reviewed changes")
+    (rere-toggle-section)
+    (search-forward "(message \"new\")")
+    (rere-unaccept)
+    (should (equal (rere-test--content-at-point)
+                   "  (message \"added\")"))
+    (should (eq (rere--section-category (magit-current-section))
+                'rere-reviewed))))
 
 (ert-deftest rere-test-toggle-file-from-line ()
   "Toggling section from a diff line collapses enclosing file."
@@ -936,18 +940,17 @@ index 0000000..1111111 100644
     (dolist (line lines)
       (should (null (rere-diff-line-highlights line))))))
 
-(ert-deftest rere-test-no-marker-leak-on-render ()
-  "Rendering buffer uses integer section boundaries without leaking markers."
+(ert-deftest rere-test-render-releases-old-markers ()
+  "Section boundaries are markers and a re-render releases the old ones."
   (with-temp-buffer
-    (rere-mode)
-    (setq rere--diff-files
-          (rere--parse-diff rere-test--sample-diff))
-    (setq rere--reviewed (make-hash-table :test 'equal))
-    (rere--render-buffer)
-    (should (integerp (oref magit-root-section start)))
-    (should (integerp (oref magit-root-section end)))))
-
-;;;; Diffstat tests
+    (rere-test--setup-sample)
+    (let ((old-root magit-root-section))
+      (should (markerp (oref old-root start)))
+      (should (markerp (oref old-root end)))
+      (rere--render-buffer)
+      (should-not (marker-buffer (oref old-root start)))
+      (should (eq (marker-buffer (oref magit-root-section start))
+                  (current-buffer))))))
 
 (ert-deftest rere-test-diffstat-graph ()
   "Diffstat graph generates proper +/- bars with faces."
@@ -1091,56 +1094,27 @@ index 0000000..1111111 100644
         (magit-section-show rev-sec))
       (should-not (oref rev-sec washer)))))
 
-(ert-deftest rere-test-patch-accept-inplace ()
-  "In-place accept hides line and updates headings."
+(ert-deftest rere-test-accept-line-updates-in-place ()
+  "Accepting a line updates counts, headings and diffstat."
   (with-temp-buffer
-    (rere-mode)
-    (setq rere--diff-files
-          (rere--parse-diff
-           rere-test--sample-diff))
-    (setq rere--reviewed
-          (make-hash-table :test 'equal))
-    (rere--render-buffer)
-    ;; move to first pending line
+    (rere-test--setup-sample)
     (rere--goto-first-pending)
     (let* ((dl (rere--section-diff-line))
-           (hash (rere-diff-line-hash dl))
-           (old-count rere--reviewed-count))
-      ;; in-place accept
-      (rere--patch-accept-lines (list dl))
-      ;; count updated
-      (should (= rere--reviewed-count
-                 (1+ old-count)))
-      ;; line hidden via overlay
-      (let ((ovs (overlays-at
-                  (or (text-property-any
-                       (point-min) (point-max)
-                       'rere-line-hash hash)
-                      (point-min)))))
-        ;; if pos not found, that means the property
-        ;; was cleared, which is also fine
-        (when (text-property-any
-               (point-min) (point-max)
-               'rere-line-hash hash)
-          (should
-           (cl-some
-            (lambda (ov)
-              (overlay-get ov 'rere-accepted))
-            ovs))))
-      ;; pending property cleared
-      (let ((pos (text-property-any
-                  (point-min) (point-max)
-                  'rere-line-hash hash)))
-        (when pos
-          (should-not
-           (get-text-property
-            pos 'rere-pending))))
-      ;; heading updated
+           (hash (rere-diff-line-hash dl)))
+      (rere-smart-accept)
+      (should (= rere--reviewed-count 1))
+      (should-not (text-property-any (point-min) (point-max)
+                                     'rere-line-hash hash))
       (goto-char (point-min))
-      (should (re-search-forward
-               (format "Progress: %d/"
-                       rere--reviewed-count)
-               nil t)))))
+      (should (re-search-forward "^Progress: 1/4 lines reviewed" nil t))
+      (should (re-search-forward "^  foo.el .*\\[1/3\\]" nil t))
+      (should (re-search-forward "^Pending review (3)" nil t))
+      (should (re-search-forward "^Reviewed changes (1)" nil t))
+      ;; point moved to the next pending line
+      (goto-char (point-min))
+      (rere--goto-first-pending)
+      (should (equal (rere-diff-line-content (rere--section-diff-line))
+                     "  (message \"new\")")))))
 
 (ert-deftest rere-test-toggle-reviewed-after-inplace-accept ()
   "Toggling Reviewed changes works after in-place line accept."
@@ -1385,6 +1359,127 @@ index 0000000..1111111 100644
             (let ((loaded (rere--load-flagged-state)))
               (should (gethash "h-flagged" loaded)))))
       (delete-directory tmp-dir t))))
+
+
+;;;; Incremental update equivalence
+
+(defun rere-test--section-tree (section)
+  "Return a comparable description of SECTION and its descendants."
+  (list (oref section type)
+        (let ((v (oref section value)))
+          (cond ((rere-file-diff-p v) (rere-file-diff-filename v))
+                ((rere-hunk-p v) (rere-hunk-header v))
+                (t v)))
+        (marker-position (oref section start))
+        (and (oref section content)
+             (if (markerp (oref section content))
+                 (marker-position (oref section content))
+               (oref section content)))
+        (marker-position (oref section end))
+        (oref section hidden)
+        (mapcar #'rere-test--section-tree (oref section children))))
+
+(defun rere-test--snapshot ()
+  "Return a comparable snapshot of the current rere buffer."
+  (let ((props nil)
+        (pos (point-min)))
+    (while (< pos (point-max))
+      (let ((sec (get-text-property pos 'magit-section)))
+        (push (list pos
+                    (get-text-property pos 'font-lock-face)
+                    (get-text-property pos 'rere-line-hash)
+                    (get-text-property pos 'rere-pending)
+                    (get-text-property pos 'rere-flagged)
+                    (get-text-property pos 'rere-reviewable)
+                    (and sec (oref sec type))
+                    (and sec (marker-position (oref sec start))))
+              props))
+      (setq pos (next-property-change pos nil (point-max))))
+    (list (buffer-substring-no-properties (point-min) (point-max))
+          (nreverse props)
+          (rere-test--visible-lines)
+          (rere-test--section-tree magit-root-section))))
+
+(defun rere-test--full-render-snapshot (source)
+  "Fully render the review state of buffer SOURCE and snapshot it."
+  (let ((files (buffer-local-value 'rere--diff-files source))
+        (reviewed (buffer-local-value 'rere--reviewed source))
+        (flagged (buffer-local-value 'rere--flagged source))
+        (visibility (buffer-local-value 'rere--visibility source)))
+    (with-temp-buffer
+      (rere-mode)
+      (setq rere--diff-files files
+            rere--reviewed (copy-hash-table reviewed)
+            rere--flagged (copy-hash-table flagged)
+            rere--visibility (and visibility
+                                  (copy-hash-table visibility)))
+      (rere--render-buffer)
+      (rere-test--snapshot))))
+
+(defun rere-test--random-line (prop)
+  "Move point to a random visible line having text property PROP."
+  (let ((positions nil)
+        (pos (point-min)))
+    (while (setq pos (text-property-not-all pos (point-max) prop nil))
+      (unless (invisible-p pos)
+        (push pos positions))
+      (setq pos (save-excursion (goto-char pos)
+                                (line-beginning-position 2))))
+    (when positions
+      (goto-char (nth (random (length positions)) positions)))))
+
+(defun rere-test--random-heading (type)
+  "Move point to a random visible heading of a section of TYPE."
+  (let ((starts nil))
+    (magit-map-sections
+     (lambda (s)
+       (when (and (eq (oref s type) type)
+                  (not (invisible-p (oref s start))))
+         (push (marker-position (oref s start)) starts))))
+    (when starts
+      (goto-char (nth (random (length starts)) starts)))))
+
+(ert-deftest rere-test-incremental-matches-full-render ()
+  "Incremental updates always produce the same buffer as a full render."
+  (random "rere")
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff
+           (concat rere-test--sample-diff
+                   (rere-bench--make-diff 4 3)))
+          rere--reviewed (make-hash-table :test 'equal)
+          rere--flagged (make-hash-table :test 'equal))
+    (cl-letf (((symbol-function 'rere--schedule-save-reviewed-state)
+               #'ignore))
+      (rere--render-buffer)
+      (dotimes (step 150)
+        (let ((op (random 8)))
+          (ignore-errors
+            (pcase op
+              (0 (when (rere-test--random-line 'rere-pending)
+                   (rere-smart-accept)))
+              (1 (when (rere-test--random-heading 'rere-hunk-section)
+                   (rere-smart-accept)))
+              (2 (when (rere-test--random-heading 'rere-file-section)
+                   (rere-smart-accept)))
+              (3 (when (rere-test--random-line 'rere-reviewable)
+                   (rere-toggle-flag)))
+              (4 (when (rere-test--random-line 'rere-reviewable)
+                   (rere-unaccept)))
+              (6 (when (rere-test--random-heading 'rere-file-section)
+                   (rere-toggle-section)))
+              (7 (when (rere-test--random-heading 'rere-hunk-section)
+                   (rere-unaccept))))))
+        (let ((incremental (rere-test--snapshot))
+              (full (rere-test--full-render-snapshot
+                     (current-buffer))))
+          (unless (equal incremental full)
+            (ert-fail (list :step step
+                            :text-equal (equal (car incremental)
+                                               (car full))
+                            :incremental (car incremental)
+                            :full (car full)))))))))
 
 (provide 'rere-test)
 ;;; rere-test.el ends here

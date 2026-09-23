@@ -25,7 +25,7 @@ compile: $(ELCS)
 
 test:
 	$(BATCH) $(LOAD_PATH) \
-	  -l ert -l $(TESTS) \
+	  -L test -l ert -l $(TESTS) \
 	  -f ert-run-tests-batch-and-exit
 
 bench: compile
