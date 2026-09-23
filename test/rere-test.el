@@ -1234,6 +1234,89 @@ With NO-LINE-NUMBERS, render without the line number gutter."
                                  (should (equal (rere-test--content-at-point) "    (new-call 1 10)"))
                                  (should (= (rere-test--screen-row) 7))))
 
+;;;; Context trimming tests
+
+(defconst rere-test--long-hunk-diff
+  (concat "diff --git a/long.el b/long.el\n"
+          "index 1111111..2222222 100644\n"
+          "--- a/long.el\n"
+          "+++ b/long.el\n"
+          "@@ -1,2 +1,22 @@ (defun long ()\n"
+          " a\n"
+          (mapconcat (lambda (i) (format "+l%d\n" i))
+                     (number-sequence 1 20) "")
+          " z\n")
+  "A diff with one hunk of 20 added lines between two context lines.")
+
+(defun rere-test--setup-long-hunk (&rest pending)
+  "Render the long hunk diff with all added lines reviewed but PENDING."
+  (rere-mode)
+  (setq-local rere-show-line-numbers nil)
+  (setq rere--diff-files (rere--parse-diff rere-test--long-hunk-diff)
+        rere--reviewed (make-hash-table :test 'equal)
+        rere--flagged (make-hash-table :test 'equal)
+        rere--diffstat-cache nil)
+  (dolist (dl (rere-hunk-lines
+               (car (rere-file-diff-hunks (car rere--diff-files)))))
+    (when (and (eq (rere-diff-line-type dl) 'added)
+               (not (member (rere-diff-line-content dl) pending)))
+      (rere--accept-line dl)))
+  (rere--render-buffer))
+
+(ert-deftest rere-test-context-trimmed-and-hunk-split ()
+  "Only a few context lines surround pending lines, like git -U3."
+  (with-temp-buffer
+    (rere-test--setup-long-hunk "l2" "l18")
+    (should (equal (rere-test--category-lines "Pending review")
+                   '("  modified   long.el"
+                     "  @@ -1,1 +1,6 @@ (defun long ()"
+                     "   a"
+                     "   l1"
+                     "  +l2"
+                     "   l3"
+                     "   l4"
+                     "   l5"
+                     "  @@ -2,1 +16,7 @@ (defun long ()"
+                     "   l15"
+                     "   l16"
+                     "   l17"
+                     "  +l18"
+                     "   l19"
+                     "   l20"
+                     "   z")))))
+
+(ert-deftest rere-test-context-lines-option ()
+  "`rere-context-lines' sets the amount of context and when to split."
+  (with-temp-buffer
+    (let ((rere-context-lines 1))
+      (rere-test--setup-long-hunk "l2" "l18")
+      (should (equal (cdr (rere-test--category-lines "Pending review"))
+                     '("  @@ -1,0 +2,3 @@ (defun long ()"
+                       "   l1"
+                       "  +l2"
+                       "   l3"
+                       "  @@ -1,0 +18,3 @@ (defun long ()"
+                       "   l17"
+                       "  +l18"
+                       "   l19"))))
+    (let ((rere-context-lines 10))
+      (rere--render-buffer)
+      (should (= 1 (cl-count-if (lambda (l) (string-prefix-p "  @@" l))
+                                (rere-test--category-lines
+                                 "Pending review")))))))
+
+(ert-deftest rere-test-accept-split-hunk-heading ()
+  "Accepting a split hunk heading accepts only the lines it shows."
+  (with-temp-buffer
+    (rere-test--setup-long-hunk "l2" "l3" "l18")
+    (goto-char (point-min))
+    (search-forward "  @@ -1,1 +1,7 @@")
+    (beginning-of-line)
+    (rere-smart-accept)
+    (should (equal (mapcar #'rere-diff-line-content
+                           (rere--pending-diff-lines))
+                   '("l18")))))
+
 ;;;; Line number tests
 
 (defun rere-test--gutter-lines ()
@@ -1719,7 +1802,8 @@ With NO-LINE-NUMBERS, render without the line number gutter."
     (setq rere--diff-files
           (rere--parse-diff
            (concat rere-test--sample-diff
-                   (rere-bench--make-diff 4 3)))
+                   (rere-bench--make-diff 4 3)
+                   rere-test--long-hunk-diff))
           rere--reviewed (make-hash-table :test 'equal)
           rere--flagged (make-hash-table :test 'equal))
     (cl-letf (((symbol-function 'rere--schedule-save-reviewed-state)

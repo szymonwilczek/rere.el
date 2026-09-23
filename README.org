@@ -51,7 +51,8 @@ you review code as well, go ahead - that's why this package is public.
   elsewhere in the file do not reset it.
 - *Magit-Style Partial Review:* Like Magit's staged and unstaged diffs,
   pending changes are shown on top of the already reviewed ones: reviewed
-  lines stay visible as context around what is left to review.
+  lines stay visible as context around what is left to review, trimmed to
+  a few lines around each change like =git diff=.
 - *Line Numbers:* Old and new file line numbers next to every diff line.
 - *Diffstat Overview:* Per-file summary of additions, removals, and review
   progress displayed at the top of the buffer.
@@ -147,12 +148,13 @@ Visual selections are supported for =s=, =u=, and =m=.
 
 ** Options
 
-| Variable               | Default | Description                                |
-|------------------------+---------+--------------------------------------------|
-| ~rere-buffer-name~       | ~"*rere*"~  | Buffer name used for the review buffer.    |
-| ~rere-refine-highlight~  | ~t~       | Enable word-level difference highlighting. |
-| ~rere-show-diffstat~     | ~t~       | Display per-file diffstat summary section. |
-| ~rere-show-line-numbers~ | ~t~       | Show file line numbers next to diff lines. |
+| Variable               | Default | Description                                 |
+|------------------------+---------+---------------------------------------------|
+| ~rere-buffer-name~       | ~"*rere*"~  | Buffer name used for the review buffer.     |
+| ~rere-refine-highlight~  | ~t~       | Enable word-level difference highlighting.  |
+| ~rere-show-diffstat~     | ~t~       | Display per-file diffstat summary section.  |
+| ~rere-show-line-numbers~ | ~t~       | Show file line numbers next to diff lines.  |
+| ~rere-context-lines~     | ~3~       | Context lines around changes (like =git -U=). |
 
 ** Faces
 

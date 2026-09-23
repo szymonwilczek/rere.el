@@ -85,6 +85,12 @@
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-context-lines 3
+  "Number of context lines shown around changes, like git's -U option.
+Reviewed lines shown as context count as context lines too."
+  :type 'natnum
+  :group 'rere)
+
 (defcustom rere-show-diffstat t
   "Whether to display the file diffstat summary section."
   :type 'boolean
@@ -855,11 +861,11 @@ belong to the category it is shown in."
       (setq s (oref s parent)))
     (and s (oref s type))))
 
-(defun rere--hunk-old-start (hunk)
-  "Return the old-file start line of HUNK as a string."
+(defun rere--hunk-start (hunk)
+  "Return the old and new start lines of HUNK as a string."
   (let ((header (rere-hunk-header hunk)))
-    (if (string-match "^@@ -\\([0-9]+\\)" header)
-        (match-string 1 header)
+    (if (string-match "^@@ -\\([0-9]+\\)[^+]*\\(\\+[0-9]+\\)" header)
+        (concat (match-string 1 header) (match-string 2 header))
       header)))
 
 (defun rere--section-key (section)
@@ -874,7 +880,7 @@ belong to the category it is shown in."
             (rere-file-diff-filename val)))
      ((eq type 'rere-hunk-section)
       (list (rere--section-category section) 'hunk
-            (rere-hunk-file val) (rere--hunk-old-start val))))))
+            (rere-hunk-file val) (rere--hunk-start val))))))
 
 (defun rere--default-visibility (key)
   "Return the visibility of the section with KEY when not yet toggled."
@@ -1656,19 +1662,81 @@ line is still context and a pending added line does not exist yet."
 (defun rere--collect-file-lines (file-diff pred)
   "Collect lines from FILE-DIFF matching PRED with surrounding context.
 Return alist of (hunk . lines-to-render), see `rere--line-display'.
-Hunks without any line matching PRED are omitted."
+Like git, only `rere-context-lines' lines are kept around the lines
+matching PRED, and a hunk whose changes are further apart is split,
+see `rere--split-hunk'.  Hunks without a matching line are omitted."
   (let ((result '()))
     (dolist (hunk (rere-file-diff-hunks file-diff))
-      (let ((lines '())
-            (has-matching nil))
+      (let ((shown '()))
         (dolist (dl (rere-hunk-lines hunk))
           (when-let* ((kind (rere--line-display dl pred)))
-            (when (eq kind 'change)
-              (setq has-matching t))
-            (push dl lines)))
-        (when has-matching
-          (push (cons hunk (nreverse lines)) result))))
+            (push (cons dl kind) shown)))
+        (setq shown (nreverse shown))
+        (when (rassq 'change shown)
+          (dolist (group (rere--context-groups shown))
+            (push (cons (rere--split-hunk hunk group) (mapcar #'car group))
+                  result)))))
     (nreverse result)))
+
+(defun rere--context-groups (shown)
+  "Split SHOWN, a list of (LINE . KIND), into groups to display.
+Keep `rere-context-lines' lines around each `change' line and start a
+new group where more lines than twice that separate two changes."
+  (let* ((n rere-context-lines)
+         (vec (vconcat shown))
+         (len (length vec))
+         (keep (make-bool-vector len nil))
+         (groups nil)
+         (group nil))
+    (dotimes (i len)
+      (when (eq (cdr (aref vec i)) 'change)
+        (cl-loop for j from (max 0 (- i n)) to (min (1- len) (+ i n))
+                 do (aset keep j t))))
+    (dotimes (i len)
+      (cond
+       ((aref keep i) (push (aref vec i) group))
+       (group (push (nreverse group) groups)
+              (setq group nil))))
+    (when group
+      (push (nreverse group) groups))
+    (nreverse groups)))
+
+(defun rere--split-hunk (hunk group)
+  "Return the part of HUNK spanning the lines of GROUP.
+GROUP is a list of (LINE . KIND) in HUNK order.  Return HUNK itself
+when GROUP spans all of it, otherwise a new hunk whose lines are those
+between the first and last line of GROUP, with a matching header."
+  (let* ((lines (rere-hunk-lines hunk))
+         (first (car (car group)))
+         (last (car (car (last group))))
+         (span (cl-subseq lines (cl-position first lines :test #'eq)
+                          (1+ (cl-position last lines :test #'eq)))))
+    (if (= (length span) (length lines))
+        hunk
+      (let ((header (rere-hunk-header hunk))
+            (before (reverse (cl-ldiff lines (memq first lines))))
+            (old-start nil) (new-start nil)
+            (old-count 0) (new-count 0))
+        (dolist (dl span)
+          (when-let* ((o (rere-diff-line-old-line dl)))
+            (unless old-start (setq old-start o))
+            (cl-incf old-count))
+          (when-let* ((n (rere-diff-line-new-line dl)))
+            (unless new-start (setq new-start n))
+            (cl-incf new-count)))
+        ;; like git, an empty side starts at the line before it
+        (unless old-start
+          (setq old-start (or (cl-some #'rere-diff-line-old-line before) 0)))
+        (unless new-start
+          (setq new-start (or (cl-some #'rere-diff-line-new-line before) 0)))
+        (make-rere-hunk
+         :header (format "@@ -%d,%d +%d,%d @@%s"
+                         old-start old-count new-start new-count
+                         (if (string-match "^@@ [^@]* @@\\(.*\\)" header)
+                             (match-string 1 header)
+                           ""))
+         :lines span
+         :file (rere-hunk-file hunk))))))
 
 (defun rere--insert-single-line (dl &optional kind)
   "Insert a single diff line DL with proper face and word refinement.
