@@ -53,7 +53,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 
-(declare-function evil-define-key "evil-core"
+(declare-function evil-define-key* "evil-core"
                   (state keymap key def &rest bindings))
 (declare-function evil-local-set-key "evil-core"
                   (state key def))
@@ -2475,7 +2475,7 @@ New or modified lines appear in Pending."
   "Set up Evil keybindings for `rere-mode'."
   (when (bound-and-true-p evil-mode)
     (evil-set-initial-state 'rere-mode 'normal)
-    (evil-define-key 'normal rere-mode-map
+    (evil-define-key* 'normal rere-mode-map
       (kbd "s") #'rere-smart-accept
       (kbd "S") #'rere-smart-accept
       (kbd "u") #'rere-unaccept
@@ -2496,7 +2496,7 @@ New or modified lines appear in Pending."
       (kbd "M") #'rere-next-flagged
       (kbd "g g") #'beginning-of-buffer
       (kbd "G") #'end-of-buffer)
-    (evil-define-key 'visual rere-mode-map
+    (evil-define-key* 'visual rere-mode-map
       (kbd "s") #'rere-smart-accept
       (kbd "S") #'rere-smart-accept
       (kbd "u") #'rere-unaccept
