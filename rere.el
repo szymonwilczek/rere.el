@@ -346,8 +346,10 @@ Return nil if file does not exist."
 ;;;; Diff parsing
 
 (defun rere--get-raw-diff ()
-  "Run git diff HEAD~1 and return output as string."
-  (shell-command-to-string "git diff HEAD~1"))
+  "Run git diff HEAD~1 and return output as string.
+The diff takes no optional lock on the index, so it cannot make a
+rebase step running at the same time fail on index.lock."
+  (shell-command-to-string "git --no-optional-locks diff HEAD~1"))
 
 (defun rere--parse-diff (raw-diff)
   "Parse RAW-DIFF string into list of `rere-file-diff'.
