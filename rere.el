@@ -96,6 +96,16 @@ Reviewed lines shown as context count as context lines too."
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-binary-file-size (* 1024 1024)
+  "Size in bytes from which files are diffed as binary without reading.
+Git reads a whole file to tell whether it is binary, which for large
+binary files such as fonts or images makes every diff slow.  Files at
+least this large are shown as \"Binary files differ\" right away.
+Text files that large are shown the same way.  Nil lets git read
+every file."
+  :type '(choice (const :tag "Read every file" nil) natnum)
+  :group 'rere)
+
 (defcustom rere-state-limit 500
   "Maximum number of commits whose review state is kept.
 Review state is stored per commit in the rere directory inside the
@@ -250,7 +260,9 @@ across rebase sessions."
 (defun rere--commit-patch-id (sha)
   "Return the stable patch ID of commit SHA, or nil."
   (when-let* ((sha sha)
-              (diff (rere--git-string "diff-tree" "-p" "--root" sha)))
+              (diff (apply #'rere--git-string
+                           `(,@(rere--git-diff-args)
+                             "diff-tree" "-p" "--root" ,sha))))
     (rere--patch-id diff)))
 
 (defun rere--save-reviewed-state ()
@@ -397,13 +409,20 @@ tree."
                           (if amend (concat amend "^") "HEAD"))
         (rere--git-string "hash-object" "-t" "tree" "/dev/null"))))
 
+(defun rere--git-diff-args ()
+  "Return git options applied to the diffs rere reads."
+  (when rere-binary-file-size
+    (list "-c" (format "core.bigFileThreshold=%d" rere-binary-file-size))))
+
 (defun rere--get-raw-diff ()
   "Run git diff against `rere--diff-base' and return output as string.
 The diff takes no optional lock on the index, so it cannot make a
 rebase step running at the same time fail on index.lock."
   (shell-command-to-string
-   (concat "git --no-optional-locks diff "
-           (shell-quote-argument (rere--diff-base)))))
+   (mapconcat #'shell-quote-argument
+              `("git" "--no-optional-locks" ,@(rere--git-diff-args)
+                "diff" ,(rere--diff-base))
+              " ")))
 
 (defun rere--read-diff ()
   "Parse the diff under review and derive its state key from it."

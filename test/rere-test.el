@@ -627,6 +627,21 @@ index 0000000..1111111 100644
    (should (file-exists-p ".git/rebase-merge/stopped-sha"))
    (should (equal (rere-test--diff-files) '("f")))))
 
+(ert-deftest rere-test-diff-large-files-as-binary ()
+  "Files of at least `rere-binary-file-size' are diffed as binary."
+  (rere-test--with-repo
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "big" (make-string 100 ?x) "small" "s\n")
+   (rere-test--commit "B" "b" "b\n")
+   (rere-test--rebase-edit "HEAD~2")
+   (let ((rere-binary-file-size 50))
+     (should (string-match-p "^Binary files .*big differ"
+                             (rere--get-raw-diff)))
+     (should (string-match-p "^\\+s$" (rere--get-raw-diff))))
+   (let ((rere-binary-file-size nil))
+     (should-not (string-match-p "^Binary files"
+                                 (rere--get-raw-diff))))))
+
 (ert-deftest rere-test-diff-base-root-commit ()
   "At an edit stop on the root commit the diff shows all its files."
   (rere-test--with-repo

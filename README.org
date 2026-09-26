@@ -168,6 +168,7 @@ Visual selections are supported for =s=, =u=, and =m=.
 | ~rere-show-line-numbers~ | ~t~       | Show file line numbers next to diff lines.  |
 | ~rere-context-lines~     | ~3~       | Context lines around changes (like =git -U=). |
 | ~rere-state-limit~       | ~500~     | Commits whose review state is kept.         |
+| ~rere-binary-file-size~  | ~1 MiB~   | Diff files this large as binary, unread.    |
 
 ** Faces
 
