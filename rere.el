@@ -44,7 +44,7 @@
 ;;   RET   - open source file at diff line
 ;;   TAB   - toggle section visibility
 ;;   r     - refresh diff
-;;   q     - quit rere buffer
+;;   q     - bury rere buffer, which keeps following the rebase
 
 ;;; Code:
 
@@ -174,6 +174,12 @@ the states written longest ago are deleted first."
 
 (defvar-local rere--state-key nil
   "Patch ID of the reviewed diff, naming its review state file.")
+
+(defvar-local rere--stop nil
+  "Identity of the rebase stop shown.")
+
+(defvar-local rere--finished nil
+  "Non-nil once the rebase of the shown review is over.")
 
 (defvar-local rere--diffstat-cache nil
   "Cached metadata for diffstat rendering: (max-len max-digits entries).")
@@ -1398,6 +1404,11 @@ Return t if found."
                         (substring sha 0 7)
                       sha)))
     (magit-insert-section (rere-header)
+      (when rere--finished
+        (insert
+         (propertize
+          "Rebase finished; the next rebase will show up here.\n"
+          'font-lock-face 'magit-dimmed)))
       (insert
        (propertize
         (format "Rebasing: %s %s (step %d/%d)\n"
@@ -1422,7 +1433,7 @@ Return t if found."
           (format "Focus: %s (press 'f' to show all)\n"
                   rere--focused-file)
           'font-lock-face 'magit-diff-file-heading)))
-      (when done
+      (when (and done (not rere--finished))
         (insert
          (propertize
           (format
@@ -2431,6 +2442,8 @@ Lines that were reviewed and still exist unchanged
 remain in Reviewed.  Flagged lines remain in Stinky changes.
 New or modified lines appear in Pending."
   (interactive)
+  (when rere--finished
+    (user-error "[rere] Rebase is over, nothing to refresh"))
   (let ((old-reviewed
          (copy-hash-table rere--reviewed))
         (old-flagged
@@ -2460,14 +2473,18 @@ New or modified lines appear in Pending."
              rere--total-lines)))
 
 (defun rere-quit ()
-  "Quit the rere buffer and restore windows."
+  "Bury the rere buffer and restore windows.
+The buffer keeps following the rebase, so the next stop is ready in
+it without calling `rere' again."
   (interactive)
   (rere--save-reviewed-state-now)
-  (let ((config rere--saved-window-config))
+  (let ((config rere--saved-window-config)
+        (buf (current-buffer)))
     (setq rere--saved-window-config nil)
-    (kill-buffer (current-buffer))
-    (when config
-      (set-window-configuration config))))
+    (if config
+        (set-window-configuration config)
+      (switch-to-buffer (other-buffer buf)))
+    (bury-buffer buf)))
 
 ;;;; Keymap
 
@@ -2574,10 +2591,67 @@ New or modified lines appear in Pending."
             #'rere--visibility-hook nil t)
   (add-hook 'post-command-hook #'rere--update-line-highlight nil t)
   (add-hook 'kill-buffer-hook #'rere--save-reviewed-state-now nil t)
+  (add-hook 'magit-post-refresh-hook #'rere--follow-rebase)
   (setq-local revert-buffer-function
               (lambda (&rest _) (rere-refresh)))
   (when (fboundp 'evil-local-set-key)
     (rere--setup-evil-buffer)))
+
+;;;; Following the rebase
+
+(defun rere--current-stop ()
+  "Return what identifies the current rebase stop, or nil outside one.
+A stop is the commit being applied, whether it is committed yet, and
+HEAD, which moves when the commit is amended or a conflict resolved."
+  (when-let* ((dir (rere--rebase-dir)))
+    (list (rere--read-file-trimmed (expand-file-name "stopped-sha" dir))
+          (rere--read-file-trimmed (expand-file-name "amend" dir))
+          (rere--git-string "rev-parse" "HEAD"))))
+
+(defun rere--load-stop ()
+  "Load the commit of the current rebase stop into the rere buffer."
+  (rere--save-reviewed-state-now)
+  (setq rere--stop (rere--current-stop)
+        rere--finished nil)
+  (setq rere--commit-info (rere--read-commit-info))
+  (rere--read-diff)
+  ;; working tree may differ from the commit since the state was
+  ;; saved, so fall back to the state of the commit itself
+  (let ((state (or (rere--load-state rere--state-key)
+                   (rere--load-state
+                    (rere--commit-patch-id
+                     (plist-get rere--commit-info :sha))))))
+    (setq rere--reviewed (or (car state)
+                             (make-hash-table :test 'equal))
+          rere--flagged (or (cdr state)
+                            (make-hash-table :test 'equal))))
+  (rere--migrate-state rere--reviewed)
+  (rere--migrate-state rere--flagged)
+  (setq rere--diffstat-cache nil)
+  (rere--render-buffer)
+  (or (rere--goto-first-pending)
+      (goto-char (point-min))))
+
+(defun rere--follow-rebase ()
+  "Keep the rere buffer on the stop of the rebase refreshed by Magit.
+When the rebase moves to another stop, load its commit.  When the
+rebase is over, keep the last review and mark it as finished in the
+header, so the buffer is ready for the next rebase of the repository."
+  (when-let* ((buf (get-buffer rere-buffer-name))
+              (root (magit-toplevel)))
+    (with-current-buffer buf
+      (when (and (derived-mode-p 'rere-mode)
+                 (equal (magit-toplevel) root))
+        (let ((stop (rere--current-stop)))
+          (cond
+           ((null stop)
+            (unless rere--finished
+              (setq rere--finished t)
+              (rere--render-buffer)))
+           ((or rere--finished (not (equal stop rere--stop)))
+            (rere--load-stop)
+            (dolist (win (get-buffer-window-list buf nil t))
+              (set-window-point win (point))))))))))
 
 ;;;; Entry point
 
@@ -2598,25 +2672,7 @@ Only works during an interactive git rebase."
     (unless (eq major-mode 'rere-mode)
       (rere-mode))
     (setq rere--saved-window-config config)
-    (rere--save-reviewed-state-now)
-    (setq rere--commit-info (rere--read-commit-info))
-    (rere--read-diff)
-    ;; working tree may differ from the commit since the state was
-    ;; saved, so fall back to the state of the commit itself
-    (let ((state (or (rere--load-state rere--state-key)
-                     (rere--load-state
-                      (rere--commit-patch-id
-                       (plist-get rere--commit-info :sha))))))
-      (setq rere--reviewed (or (car state)
-                               (make-hash-table :test 'equal))
-            rere--flagged (or (cdr state)
-                              (make-hash-table :test 'equal))))
-    (rere--migrate-state rere--reviewed)
-    (rere--migrate-state rere--flagged)
-    (setq rere--diffstat-cache nil)
-    (rere--render-buffer)
-    (or (rere--goto-first-pending)
-        (goto-char (point-min)))))
+    (rere--load-stop)))
 
 (provide 'rere)
 ;;; rere.el ends here

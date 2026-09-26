@@ -700,6 +700,55 @@ index 0000000..1111111 100644
     (let ((sec (magit-current-section)))
       (should (oref sec hidden)))))
 
+;;;; Following the rebase
+
+(ert-deftest rere-test-follow-rebase ()
+  "The rere buffer follows the rebase and waits for the next one."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n")
+    (rere-test--commit "A" "a" "a\n")
+    (rere-test--commit "B" "b" "b\n")
+    (let ((process-environment
+           (cons "GIT_SEQUENCE_EDITOR=sed -i s/^pick/edit/"
+                 process-environment))
+          (repo default-directory))
+      (rere-test--git "rebase" "-i" "HEAD~2")
+      (save-window-excursion
+        (unwind-protect
+            (progn
+              (rere)
+              (should (equal (plist-get rere--commit-info :title) "A"))
+              (rere-quit)
+              (let ((buf (get-buffer rere-buffer-name)))
+                (should (buffer-live-p buf))
+                (rere-test--git "rebase" "--continue")
+                (with-temp-buffer
+                  (setq default-directory repo)
+                  (rere--follow-rebase))
+                (with-current-buffer buf
+                  (should (equal (plist-get rere--commit-info :title) "B"))
+                  (should-not rere--finished))
+                (rere-test--git "rebase" "--continue")
+                (with-temp-buffer
+                  (setq default-directory repo)
+                  (rere--follow-rebase))
+                (with-current-buffer buf
+                  (should rere--finished)
+                  (goto-char (point-min))
+                  (should (looking-at-p "Rebase finished"))
+                  (should-error (rere-refresh) :type 'user-error))
+                (should (zerop (rere-test--git "rebase" "-i" "HEAD~1")))
+                (should (rere--current-stop))
+                (with-temp-buffer
+                  (setq default-directory repo)
+                  (rere--follow-rebase))
+                (with-current-buffer buf
+                  (should-not rere--finished)
+                  (should (equal (plist-get rere--commit-info :title)
+                                 "B")))))
+          (when-let* ((buf (get-buffer rere-buffer-name)))
+            (kill-buffer buf)))))))
+
 ;;;; Persistence tests
 
 (defmacro rere-test--with-state-dir (&rest body)
