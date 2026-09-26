@@ -70,6 +70,10 @@ you review code as well, go ahead - that's why this package is public.
   tens of thousands of changed lines.
 - *No Git side effects:* Passive - no =git add=, =git commit=, etc; commit SHAs
   remain intact.
+- *Conflict-Aware Diff:* At an =edit= stop the diff shows the commit
+  that stopped.  At a conflict it shows only the conflicting commit and
+  its resolution, not the commit applied before it, which was already
+  reviewed at its own stop.  The root commit is reviewed like any other.
 - *Magit-Native UI:* Built on =magit-section= with familiar faces, folding,
   Evil navigation, and jump to source.
 

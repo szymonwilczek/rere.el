@@ -345,11 +345,35 @@ Return nil if file does not exist."
 
 ;;;; Diff parsing
 
+(defun rere--git-string (&rest args)
+  "Run git with ARGS and return its trimmed output, or nil on failure."
+  (with-temp-buffer
+    (when (zerop (apply #'call-process "git" nil '(t nil) nil args))
+      (string-trim (buffer-string)))))
+
+(defun rere--diff-base ()
+  "Return the revision the commit under review is diffed against.
+At an edit stop git has already committed the commit and records it
+in the amend file of the rebase directory.  Its changes are those of
+its parent against the working tree, which stays right after the
+commit is amended or reset to unpack it.  At any other stop, such as
+a conflict, the commit is not committed yet and HEAD is the commit
+before it.  A commit without a parent is diffed against the empty
+tree."
+  (let ((amend (when-let* ((dir (rere--rebase-dir)))
+                 (rere--read-file-trimmed
+                  (expand-file-name "amend" dir)))))
+    (or (rere--git-string "rev-parse" "--verify" "--quiet"
+                          (if amend (concat amend "^") "HEAD"))
+        (rere--git-string "hash-object" "-t" "tree" "/dev/null"))))
+
 (defun rere--get-raw-diff ()
-  "Run git diff HEAD~1 and return output as string.
+  "Run git diff against `rere--diff-base' and return output as string.
 The diff takes no optional lock on the index, so it cannot make a
 rebase step running at the same time fail on index.lock."
-  (shell-command-to-string "git --no-optional-locks diff HEAD~1"))
+  (shell-command-to-string
+   (concat "git --no-optional-locks diff "
+           (shell-quote-argument (rere--diff-base)))))
 
 (defun rere--parse-diff (raw-diff)
   "Parse RAW-DIFF string into list of `rere-file-diff'.

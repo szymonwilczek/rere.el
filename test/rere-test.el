@@ -537,6 +537,104 @@ index 0000000..1111111 100644
            (or load-file-name default-directory) ".git"))))
     (should-not (rere--rebase-in-progress-p))))
 
+;;;; Diff base tests
+
+(defmacro rere-test--with-repo (&rest body)
+  "Run BODY in a fresh git repository with a neutral git config."
+  (declare (indent 0))
+  `(let* ((dir (file-name-as-directory
+                (make-temp-file "rere-test-repo-" t)))
+          (default-directory dir)
+          (process-environment
+           (append '("GIT_CONFIG_GLOBAL=/dev/null"
+                     "GIT_CONFIG_NOSYSTEM=1"
+                     "GIT_AUTHOR_NAME=rere"
+                     "GIT_AUTHOR_EMAIL=rere@example.com"
+                     "GIT_COMMITTER_NAME=rere"
+                     "GIT_COMMITTER_EMAIL=rere@example.com"
+                     "GIT_EDITOR=true")
+                   process-environment)))
+     (unwind-protect
+         (progn (rere-test--git "init" "-q") ,@body)
+       (delete-directory dir t))))
+
+(defun rere-test--git (&rest args)
+  "Run git with ARGS in `default-directory', ignoring failures."
+  (apply #'call-process "git" nil nil nil args))
+
+(defun rere-test--commit (message &rest files)
+  "Write FILES, a list of names and contents, and commit as MESSAGE."
+  (while files
+    (with-temp-file (pop files) (insert (pop files))))
+  (rere-test--git "add" "-A")
+  (rere-test--git "commit" "-q" "-m" message))
+
+(defun rere-test--rebase-edit (upstream)
+  "Rebase onto UPSTREAM, or the root when nil, stopping at the first."
+  (let ((process-environment
+         (cons "GIT_SEQUENCE_EDITOR=sed -i 1s/^pick/edit/"
+               process-environment)))
+    (apply #'rere-test--git "rebase" "-i"
+           (if upstream (list upstream) '("--root")))))
+
+(defun rere-test--diff-files ()
+  "Return the names of the files in the diff of the current stop."
+  (mapcar #'rere-file-diff-filename
+          (rere--parse-diff (rere--get-raw-diff))))
+
+(ert-deftest rere-test-diff-base-edit-stop ()
+  "At an edit stop the diff shows the commit that stopped."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n")
+    (rere-test--commit "A" "a" "a\n")
+    (rere-test--commit "B" "b" "b\n")
+    (rere-test--rebase-edit "HEAD~2")
+    (should (equal (rere-test--diff-files) '("a")))))
+
+(ert-deftest rere-test-diff-base-amended-edit-stop ()
+  "At an edit stop the diff still shows the commit once it is amended."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n")
+    (rere-test--commit "A" "a" "a\n")
+    (rere-test--commit "B" "b" "b\n")
+    (rere-test--rebase-edit "HEAD~2")
+    (with-temp-file "c" (insert "c\n"))
+    (rere-test--git "add" "c")
+    (rere-test--git "commit" "-q" "--amend" "--no-edit")
+    (should (equal (rere-test--diff-files) '("a" "c")))))
+
+(ert-deftest rere-test-diff-base-unpacked-edit-stop ()
+  "At an edit stop the diff still shows the commit once it is reset."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n")
+    (rere-test--commit "A" "a" "a\n")
+    (rere-test--commit "B" "b" "b\n")
+    (rere-test--rebase-edit "HEAD~2")
+    (rere-test--git "reset" "-q" "HEAD~")
+    (rere-test--git "add" "-N" "a")
+    (should (equal (rere-test--diff-files) '("a")))))
+
+(ert-deftest rere-test-diff-base-conflict-stop ()
+  "At a conflict the diff leaves out the commit applied before it."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n2\n3\n")
+    (rere-test--commit "A" "f" "1\nA\n3\n" "a" "a\n")
+    (rere-test--commit "B" "f" "1\nB\n3\n")
+    (rere-test--rebase-edit "HEAD~2")
+    (with-temp-file "f" (insert "1\nA2\n3\n"))
+    (rere-test--git "commit" "-q" "-a" "--amend" "--no-edit")
+    (rere-test--git "rebase" "--continue")
+    (should (file-exists-p ".git/rebase-merge/stopped-sha"))
+    (should (equal (rere-test--diff-files) '("f")))))
+
+(ert-deftest rere-test-diff-base-root-commit ()
+  "At an edit stop on the root commit the diff shows all its files."
+  (rere-test--with-repo
+    (rere-test--commit "root" "r" "r\n")
+    (rere-test--commit "next" "n" "n\n")
+    (rere-test--rebase-edit nil)
+    (should (equal (rere-test--diff-files) '("r")))))
+
 ;;;; Target finding tests
 
 (defun rere-test--content-at-point ()
