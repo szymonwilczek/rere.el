@@ -77,11 +77,11 @@ you review code as well, go ahead - that's why this package is public.
   that stopped.  At a conflict it shows only the conflicting commit and
   its resolution, not the commit applied before it, which was already
   reviewed at its own stop.  The root commit is reviewed like any other.
-- *Follows the Rebase:* Continuing the rebase in Magit loads the next
-  stop into the rere buffer, even when it is buried with =q=.  When the
-  rebase is over, the last review stays and its header says so, and the
-  next rebase of the repository shows up in the same buffer, without
-  calling =M-x rere= again.
+- *Follows the Rebase:* While the rere buffer is open, continuing the
+  rebase in Magit loads the next stop into it.  When the rebase is over,
+  the last review stays and its header says so, and the next rebase of
+  the repository shows up in the same buffer, without calling =M-x rere=
+  again.
 - *Magit-Native UI:* Built on =magit-section= with familiar faces, folding,
   Evil navigation, and jump to source.
 
@@ -153,7 +153,7 @@ you review code as well, go ahead - that's why this package is public.
 | =f=   | ~rere-toggle-focus~   | Toggle focus mode on file at point     |
 | =c=   | ~rere-toggle-context~ | Toggle context lines in diff hunks     |
 | =r=   | ~rere-refresh~        | Re-parse diff, preserve reviewed state |
-| =q=   | ~rere-quit~           | Restore window layout and bury buffer  |
+| =q=   | ~rere-quit~           | Restore window layout and quit         |
 
 All bindings work in both Emacs and Evil (normal, motion, and visual states).
 Visual selections are supported for =s=, =u=, and =m=.

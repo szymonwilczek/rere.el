@@ -585,55 +585,55 @@ index 0000000..1111111 100644
 (ert-deftest rere-test-diff-base-edit-stop ()
   "At an edit stop the diff shows the commit that stopped."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n")
-    (rere-test--commit "A" "a" "a\n")
-    (rere-test--commit "B" "b" "b\n")
-    (rere-test--rebase-edit "HEAD~2")
-    (should (equal (rere-test--diff-files) '("a")))))
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (rere-test--commit "B" "b" "b\n")
+   (rere-test--rebase-edit "HEAD~2")
+   (should (equal (rere-test--diff-files) '("a")))))
 
 (ert-deftest rere-test-diff-base-amended-edit-stop ()
   "At an edit stop the diff still shows the commit once it is amended."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n")
-    (rere-test--commit "A" "a" "a\n")
-    (rere-test--commit "B" "b" "b\n")
-    (rere-test--rebase-edit "HEAD~2")
-    (with-temp-file "c" (insert "c\n"))
-    (rere-test--git "add" "c")
-    (rere-test--git "commit" "-q" "--amend" "--no-edit")
-    (should (equal (rere-test--diff-files) '("a" "c")))))
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (rere-test--commit "B" "b" "b\n")
+   (rere-test--rebase-edit "HEAD~2")
+   (with-temp-file "c" (insert "c\n"))
+   (rere-test--git "add" "c")
+   (rere-test--git "commit" "-q" "--amend" "--no-edit")
+   (should (equal (rere-test--diff-files) '("a" "c")))))
 
 (ert-deftest rere-test-diff-base-unpacked-edit-stop ()
   "At an edit stop the diff still shows the commit once it is reset."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n")
-    (rere-test--commit "A" "a" "a\n")
-    (rere-test--commit "B" "b" "b\n")
-    (rere-test--rebase-edit "HEAD~2")
-    (rere-test--git "reset" "-q" "HEAD~")
-    (rere-test--git "add" "-N" "a")
-    (should (equal (rere-test--diff-files) '("a")))))
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (rere-test--commit "B" "b" "b\n")
+   (rere-test--rebase-edit "HEAD~2")
+   (rere-test--git "reset" "-q" "HEAD~")
+   (rere-test--git "add" "-N" "a")
+   (should (equal (rere-test--diff-files) '("a")))))
 
 (ert-deftest rere-test-diff-base-conflict-stop ()
   "At a conflict the diff leaves out the commit applied before it."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n2\n3\n")
-    (rere-test--commit "A" "f" "1\nA\n3\n" "a" "a\n")
-    (rere-test--commit "B" "f" "1\nB\n3\n")
-    (rere-test--rebase-edit "HEAD~2")
-    (with-temp-file "f" (insert "1\nA2\n3\n"))
-    (rere-test--git "commit" "-q" "-a" "--amend" "--no-edit")
-    (rere-test--git "rebase" "--continue")
-    (should (file-exists-p ".git/rebase-merge/stopped-sha"))
-    (should (equal (rere-test--diff-files) '("f")))))
+   (rere-test--commit "base" "f" "1\n2\n3\n")
+   (rere-test--commit "A" "f" "1\nA\n3\n" "a" "a\n")
+   (rere-test--commit "B" "f" "1\nB\n3\n")
+   (rere-test--rebase-edit "HEAD~2")
+   (with-temp-file "f" (insert "1\nA2\n3\n"))
+   (rere-test--git "commit" "-q" "-a" "--amend" "--no-edit")
+   (rere-test--git "rebase" "--continue")
+   (should (file-exists-p ".git/rebase-merge/stopped-sha"))
+   (should (equal (rere-test--diff-files) '("f")))))
 
 (ert-deftest rere-test-diff-base-root-commit ()
   "At an edit stop on the root commit the diff shows all its files."
   (rere-test--with-repo
-    (rere-test--commit "root" "r" "r\n")
-    (rere-test--commit "next" "n" "n\n")
-    (rere-test--rebase-edit nil)
-    (should (equal (rere-test--diff-files) '("r")))))
+   (rere-test--commit "root" "r" "r\n")
+   (rere-test--commit "next" "n" "n\n")
+   (rere-test--rebase-edit nil)
+   (should (equal (rere-test--diff-files) '("r")))))
 
 ;;;; Target finding tests
 
@@ -705,49 +705,47 @@ index 0000000..1111111 100644
 (ert-deftest rere-test-follow-rebase ()
   "The rere buffer follows the rebase and waits for the next one."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n")
-    (rere-test--commit "A" "a" "a\n")
-    (rere-test--commit "B" "b" "b\n")
-    (let ((process-environment
-           (cons "GIT_SEQUENCE_EDITOR=sed -i s/^pick/edit/"
-                 process-environment))
-          (repo default-directory))
-      (rere-test--git "rebase" "-i" "HEAD~2")
-      (save-window-excursion
-        (unwind-protect
-            (progn
-              (rere)
-              (should (equal (plist-get rere--commit-info :title) "A"))
-              (rere-quit)
-              (let ((buf (get-buffer rere-buffer-name)))
-                (should (buffer-live-p buf))
-                (rere-test--git "rebase" "--continue")
-                (with-temp-buffer
-                  (setq default-directory repo)
-                  (rere--follow-rebase))
-                (with-current-buffer buf
-                  (should (equal (plist-get rere--commit-info :title) "B"))
-                  (should-not rere--finished))
-                (rere-test--git "rebase" "--continue")
-                (with-temp-buffer
-                  (setq default-directory repo)
-                  (rere--follow-rebase))
-                (with-current-buffer buf
-                  (should rere--finished)
-                  (goto-char (point-min))
-                  (should (looking-at-p "Rebase finished"))
-                  (should-error (rere-refresh) :type 'user-error))
-                (should (zerop (rere-test--git "rebase" "-i" "HEAD~1")))
-                (should (rere--current-stop))
-                (with-temp-buffer
-                  (setq default-directory repo)
-                  (rere--follow-rebase))
-                (with-current-buffer buf
-                  (should-not rere--finished)
-                  (should (equal (plist-get rere--commit-info :title)
-                                 "B")))))
-          (when-let* ((buf (get-buffer rere-buffer-name)))
-            (kill-buffer buf)))))))
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (rere-test--commit "B" "b" "b\n")
+   (let ((process-environment
+          (cons "GIT_SEQUENCE_EDITOR=sed -i s/^pick/edit/"
+                process-environment))
+         (repo default-directory))
+     (rere-test--git "rebase" "-i" "HEAD~2")
+     (save-window-excursion
+       (unwind-protect
+           (progn
+             (rere)
+             (should (equal (plist-get rere--commit-info :title) "A"))
+             (let ((buf (get-buffer rere-buffer-name)))
+               (rere-test--git "rebase" "--continue")
+               (with-temp-buffer
+                 (setq default-directory repo)
+                 (rere--follow-rebase))
+               (with-current-buffer buf
+                 (should (equal (plist-get rere--commit-info :title) "B"))
+                 (should-not rere--finished))
+               (rere-test--git "rebase" "--continue")
+               (with-temp-buffer
+                 (setq default-directory repo)
+                 (rere--follow-rebase))
+               (with-current-buffer buf
+                 (should rere--finished)
+                 (goto-char (point-min))
+                 (should (looking-at-p "Rebase finished"))
+                 (should-error (rere-refresh) :type 'user-error))
+               (should (zerop (rere-test--git "rebase" "-i" "HEAD~1")))
+               (should (rere--current-stop))
+               (with-temp-buffer
+                 (setq default-directory repo)
+                 (rere--follow-rebase))
+               (with-current-buffer buf
+                 (should-not rere--finished)
+                 (should (equal (plist-get rere--commit-info :title)
+                                "B")))))
+         (when-let* ((buf (get-buffer rere-buffer-name)))
+           (kill-buffer buf)))))))
 
 ;;;; Persistence tests
 
@@ -772,88 +770,88 @@ index 0000000..1111111 100644
 (ert-deftest rere-test-save-and-load-state ()
   "Reviewed and flagged state round-trips through its state file."
   (rere-test--with-state-dir
-    (with-temp-buffer
-      (rere-mode)
-      (setq rere--state-key "abc123"
-            rere--reviewed (rere-test--table "hash1" "hash2")
-            rere--flagged (rere-test--table "h-flagged"))
-      (rere--save-reviewed-state)
-      (let ((state (rere--load-state "abc123")))
-        (should (= (hash-table-count (car state)) 2))
-        (should (gethash "hash1" (car state)))
-        (should (gethash "h-flagged" (cdr state)))
-        (should-not (gethash "h-flagged" (car state))))
-      (should-not (rere--load-state "def456")))))
+   (with-temp-buffer
+     (rere-mode)
+     (setq rere--state-key "abc123"
+           rere--reviewed (rere-test--table "hash1" "hash2")
+           rere--flagged (rere-test--table "h-flagged"))
+     (rere--save-reviewed-state)
+     (let ((state (rere--load-state "abc123")))
+       (should (= (hash-table-count (car state)) 2))
+       (should (gethash "hash1" (car state)))
+       (should (gethash "h-flagged" (cdr state)))
+       (should-not (gethash "h-flagged" (car state))))
+     (should-not (rere--load-state "def456")))))
 
 (ert-deftest rere-test-save-empty-state-deletes-file ()
   "Undoing every review removes the state file of the diff."
   (rere-test--with-state-dir
-    (with-temp-buffer
-      (rere-mode)
-      (setq rere--state-key "abc123"
-            rere--reviewed (rere-test--table "hash1")
-            rere--flagged (rere-test--table))
-      (rere--save-reviewed-state)
-      (should (rere--load-state "abc123"))
-      (clrhash rere--reviewed)
-      (rere--save-reviewed-state)
-      (should-not (file-exists-p (rere--state-file "abc123"))))))
+   (with-temp-buffer
+     (rere-mode)
+     (setq rere--state-key "abc123"
+           rere--reviewed (rere-test--table "hash1")
+           rere--flagged (rere-test--table))
+     (rere--save-reviewed-state)
+     (should (rere--load-state "abc123"))
+     (clrhash rere--reviewed)
+     (rere--save-reviewed-state)
+     (should-not (file-exists-p (rere--state-file "abc123"))))))
 
 (ert-deftest rere-test-save-outside-rebase ()
   "No state is written once the rebase is over."
   (rere-test--with-state-dir
-    (cl-letf (((symbol-function 'rere--rebase-in-progress-p) #'ignore))
-      (with-temp-buffer
-        (rere-mode)
-        (setq rere--state-key "abc123"
-              rere--reviewed (rere-test--table "hash1"))
-        (rere--save-reviewed-state)
-        (should-not (directory-files state-dir nil "\\`[^.]"))))))
+   (cl-letf (((symbol-function 'rere--rebase-in-progress-p) #'ignore))
+     (with-temp-buffer
+       (rere-mode)
+       (setq rere--state-key "abc123"
+             rere--reviewed (rere-test--table "hash1"))
+       (rere--save-reviewed-state)
+       (should-not (directory-files state-dir nil "\\`[^.]"))))))
 
 (ert-deftest rere-test-prune-oldest-states ()
   "Saving a new state beyond the limit deletes the oldest ones."
   (rere-test--with-state-dir
-    (with-temp-buffer
-      (rere-mode)
-      (setq rere--reviewed (rere-test--table "hash1"))
-      (dolist (key '("a1" "b2" "c3"))
-        (setq rere--state-key key)
-        (rere--save-reviewed-state))
-      (set-file-times (rere--state-file "a1") '(0 0))
-      (set-file-times (rere--state-file "b2") '(0 10))
-      (set-file-times (rere--state-file "c3") '(0 20))
-      (let ((rere-state-limit 2))
-        (setq rere--state-key "d4")
-        (rere--save-reviewed-state))
-      (should (equal (directory-files state-dir nil "\\`[^.]")
-                     '("c3" "d4"))))))
+   (with-temp-buffer
+     (rere-mode)
+     (setq rere--reviewed (rere-test--table "hash1"))
+     (dolist (key '("a1" "b2" "c3"))
+       (setq rere--state-key key)
+       (rere--save-reviewed-state))
+     (set-file-times (rere--state-file "a1") '(0 0))
+     (set-file-times (rere--state-file "b2") '(0 10))
+     (set-file-times (rere--state-file "c3") '(0 20))
+     (let ((rere-state-limit 2))
+       (setq rere--state-key "d4")
+       (rere--save-reviewed-state))
+     (should (equal (directory-files state-dir nil "\\`[^.]")
+                    '("c3" "d4"))))))
 
 (ert-deftest rere-test-debounced-save ()
   "Debounced save schedules timer and immediate save executes now."
   (rere-test--with-state-dir
-    (with-temp-buffer
-      (rere-mode)
-      (setq rere--state-key "deb123"
-            rere--reviewed (rere-test--table "h1"))
-      (rere--schedule-save-reviewed-state)
-      (should (timerp rere--save-state-timer))
-      (rere--save-reviewed-state-now)
-      (should-not rere--save-state-timer)
-      (should (file-exists-p (rere--state-file "deb123"))))))
+   (with-temp-buffer
+     (rere-mode)
+     (setq rere--state-key "deb123"
+           rere--reviewed (rere-test--table "h1"))
+     (rere--schedule-save-reviewed-state)
+     (should (timerp rere--save-state-timer))
+     (rere--save-reviewed-state-now)
+     (should-not rere--save-state-timer)
+     (should (file-exists-p (rere--state-file "deb123"))))))
 
 (ert-deftest rere-test-state-key-survives-rebase ()
   "A commit rebased onto a new base keeps the patch ID of its diff."
   (rere-test--with-repo
-    (rere-test--commit "base" "f" "1\n")
-    (rere-test--commit "A" "a" "a\n")
-    (let ((before (rere--commit-patch-id "HEAD")))
-      (rere-test--git "checkout" "-q" "-b" "other" "HEAD~1")
-      (rere-test--commit "other" "o" "o\n")
-      (rere-test--git "checkout" "-q" "-")
-      (rere-test--git "rebase" "-q" "other")
-      (rere-test--rebase-edit "HEAD~1")
-      (should before)
-      (should (equal (rere--patch-id (rere--get-raw-diff)) before)))))
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (let ((before (rere--commit-patch-id "HEAD")))
+     (rere-test--git "checkout" "-q" "-b" "other" "HEAD~1")
+     (rere-test--commit "other" "o" "o\n")
+     (rere-test--git "checkout" "-q" "-")
+     (rere-test--git "rebase" "-q" "other")
+     (rere-test--rebase-edit "HEAD~1")
+     (should before)
+     (should (equal (rere--patch-id (rere--get-raw-diff)) before)))))
 
 (ert-deftest rere-test-reviewed-section-hidden-overlay ()
   "Reviewed section is collapsed and not rendered by default."

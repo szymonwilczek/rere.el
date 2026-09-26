@@ -44,7 +44,7 @@
 ;;   RET   - open source file at diff line
 ;;   TAB   - toggle section visibility
 ;;   r     - refresh diff
-;;   q     - bury rere buffer, which keeps following the rebase
+;;   q     - quit rere buffer
 
 ;;; Code:
 
@@ -2473,18 +2473,14 @@ New or modified lines appear in Pending."
              rere--total-lines)))
 
 (defun rere-quit ()
-  "Bury the rere buffer and restore windows.
-The buffer keeps following the rebase, so the next stop is ready in
-it without calling `rere' again."
+  "Quit the rere buffer and restore windows."
   (interactive)
   (rere--save-reviewed-state-now)
-  (let ((config rere--saved-window-config)
-        (buf (current-buffer)))
+  (let ((config rere--saved-window-config))
     (setq rere--saved-window-config nil)
-    (if config
-        (set-window-configuration config)
-      (switch-to-buffer (other-buffer buf)))
-    (bury-buffer buf)))
+    (kill-buffer (current-buffer))
+    (when config
+      (set-window-configuration config))))
 
 ;;;; Keymap
 
