@@ -96,6 +96,14 @@ Reviewed lines shown as context count as context lines too."
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-state-limit 500
+  "Maximum number of commits whose review state is kept.
+Review state is stored per commit in the rere directory inside the
+git directory.  When a new commit is saved and the limit is exceeded,
+the states written longest ago are deleted first."
+  :type 'natnum
+  :group 'rere)
+
 ;;;; Faces
 
 (defface rere-flagged-line
@@ -164,6 +172,9 @@ Reviewed lines shown as context count as context lines too."
 (defvar-local rere--commit-info nil
   "Plist with :sha :title :step :total.")
 
+(defvar-local rere--state-key nil
+  "Patch ID of the reviewed diff, naming its review state file.")
+
 (defvar-local rere--diffstat-cache nil
   "Cached metadata for diffstat rendering: (max-len max-digits entries).")
 
@@ -208,31 +219,72 @@ Reviewed lines shown as context count as context lines too."
 
 ;;;; State persistence
 
+(defun rere--state-dir ()
+  "Return the directory holding review state, shared by worktrees."
+  (when-let* ((dir (rere--git-string "rev-parse" "--git-common-dir")))
+    (expand-file-name "rere" dir)))
+
+(defun rere--state-file (key)
+  "Return the review state file of patch ID KEY, or nil."
+  (when-let* ((key key)
+              (dir (rere--state-dir)))
+    (expand-file-name key dir)))
+
+(defun rere--patch-id (diff)
+  "Return the stable patch ID of DIFF, or nil when DIFF is empty.
+The patch ID stays the same when a commit is rebased or amended
+without changing its diff, so review state follows the commit
+across rebase sessions."
+  (with-temp-buffer
+    (insert diff)
+    (call-process-region (point-min) (point-max) "git" t '(t nil) nil
+                         "patch-id" "--stable")
+    (car (split-string (buffer-string)))))
+
+(defun rere--commit-patch-id (sha)
+  "Return the stable patch ID of commit SHA, or nil."
+  (when-let* ((sha sha)
+              (diff (rere--git-string "diff-tree" "-p" "--root" sha)))
+    (rere--patch-id diff)))
+
 (defun rere--save-reviewed-state ()
-  "Save reviewed and flagged hashes to the rebase state directory."
-  (when-let* ((rebase-dir (rere--rebase-dir))
-              (sha (plist-get rere--commit-info :sha)))
-    (let ((rev-file (expand-file-name
-                     (format "rere-reviewed-%s" sha)
-                     rebase-dir))
-          (flag-file (expand-file-name
-                      (format "rere-flagged-%s" sha)
-                      rebase-dir))
-          (rev-hashes '())
-          (flag-hashes '())
-          (write-region-inhibit-fsync t))
-      (when rere--reviewed
-        (maphash (lambda (k _v) (push k rev-hashes))
-                 rere--reviewed))
-      (with-temp-file rev-file
-        (dolist (h (nreverse rev-hashes))
-          (insert h "\n")))
-      (when rere--flagged
-        (maphash (lambda (k _v) (push k flag-hashes))
-                 rere--flagged))
-      (with-temp-file flag-file
-        (dolist (h (nreverse flag-hashes))
-          (insert h "\n"))))))
+  "Save reviewed and flagged hashes to the state file of the diff.
+Save only during a rebase, the only time rere has a diff to review.
+Delete the file when nothing is reviewed or flagged.  Writing a new
+file prunes the states beyond `rere-state-limit'."
+  (when-let* (((rere--rebase-in-progress-p))
+              (file (rere--state-file rere--state-key)))
+    (let ((write-region-inhibit-fsync t)
+          (lines '()))
+      (dolist (entry `(("r" . ,rere--reviewed) ("f" . ,rere--flagged)))
+        (when (cdr entry)
+          (maphash (lambda (k _v)
+                     (push (concat (car entry) " " k) lines))
+                   (cdr entry))))
+      (cond
+       (lines
+        (let ((new (not (file-exists-p file))))
+          (make-directory (file-name-directory file) t)
+          (with-temp-file file
+            (dolist (line (nreverse lines))
+              (insert line "\n")))
+          (when new
+            (rere--prune-states (file-name-directory file)))))
+       ((file-exists-p file)
+        (ignore-errors (delete-file file)))))))
+
+(defun rere--prune-states (dir)
+  "Delete the oldest state files in DIR beyond `rere-state-limit'."
+  (let ((files (directory-files-and-attributes
+                dir t "\\`[[:xdigit:]]+\\'" t)))
+    (when (> (length files) rere-state-limit)
+      (setq files (sort files
+                        (lambda (a b)
+                          (time-less-p
+                           (file-attribute-modification-time (cdr a))
+                           (file-attribute-modification-time (cdr b))))))
+      (dolist (f (butlast files rere-state-limit))
+        (ignore-errors (delete-file (car f)))))))
 
 (defvar-local rere--save-state-timer nil
   "Timer for debounced saving of reviewed state.")
@@ -257,49 +309,21 @@ Reviewed lines shown as context count as context lines too."
     (setq rere--save-state-timer nil))
   (rere--save-reviewed-state))
 
-(defun rere--load-reviewed-state ()
-  "Load reviewed hashes from the rebase state directory.
-Return a hash table of reviewed hashes."
-  (let ((table (make-hash-table :test 'equal)))
-    (when-let* ((rebase-dir (rere--rebase-dir))
-                (sha (plist-get rere--commit-info :sha)))
-      (let ((file (expand-file-name
-                   (format "rere-reviewed-%s" sha)
-                   rebase-dir)))
-        (when (file-exists-p file)
-          (with-temp-buffer
-            (insert-file-contents file)
-            (dolist (line (split-string (buffer-string) "\n" t))
-              (puthash (string-trim line) t table))))))
-    table))
-
-(defun rere--load-flagged-state ()
-  "Load flagged hashes from the rebase state directory.
-Return a hash table of flagged hashes."
-  (let ((table (make-hash-table :test 'equal)))
-    (when-let* ((rebase-dir (rere--rebase-dir))
-                (sha (plist-get rere--commit-info :sha)))
-      (let ((file (expand-file-name
-                   (format "rere-flagged-%s" sha)
-                   rebase-dir)))
-        (when (file-exists-p file)
-          (with-temp-buffer
-            (insert-file-contents file)
-            (dolist (line (split-string (buffer-string) "\n" t))
-              (puthash (string-trim line) t table))))))
-    table))
-
-(defun rere--cleanup-old-reviewed-states (current-sha)
-  "Delete review state files from previous commits in REBASE-DIR."
-  (when-let* ((rebase-dir (rere--rebase-dir)))
-    (dolist (prefix '("rere-reviewed-*" "rere-flagged-*"))
-      (dolist (f (file-expand-wildcards
-                  (expand-file-name prefix rebase-dir)))
-        (unless (or (equal (file-name-nondirectory f)
-                           (format "rere-reviewed-%s" current-sha))
-                    (equal (file-name-nondirectory f)
-                           (format "rere-flagged-%s" current-sha)))
-          (ignore-errors (delete-file f)))))))
+(defun rere--load-state (key)
+  "Load the review state saved under patch ID KEY.
+Return a cons of the reviewed and flagged hash tables, or nil when
+nothing is saved under KEY."
+  (when-let* ((file (rere--state-file key))
+              ((file-exists-p file)))
+    (let ((reviewed (make-hash-table :test 'equal))
+          (flagged (make-hash-table :test 'equal)))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (dolist (line (split-string (buffer-string) "\n" t))
+          (pcase (split-string line)
+            (`("r" ,h) (puthash h t reviewed))
+            (`("f" ,h) (puthash h t flagged)))))
+      (cons reviewed flagged))))
 
 ;;;; Commit info
 
@@ -374,6 +398,12 @@ rebase step running at the same time fail on index.lock."
   (shell-command-to-string
    (concat "git --no-optional-locks diff "
            (shell-quote-argument (rere--diff-base)))))
+
+(defun rere--read-diff ()
+  "Parse the diff under review and derive its state key from it."
+  (let ((raw (rere--get-raw-diff)))
+    (setq rere--state-key (rere--patch-id raw)
+          rere--diff-files (rere--parse-diff raw))))
 
 (defun rere--parse-diff (raw-diff)
   "Parse RAW-DIFF string into list of `rere-file-diff'.
@@ -2405,8 +2435,7 @@ New or modified lines appear in Pending."
          (copy-hash-table rere--reviewed))
         (old-flagged
          (and rere--flagged (copy-hash-table rere--flagged))))
-    (setq rere--diff-files
-          (rere--parse-diff (rere--get-raw-diff)))
+    (rere--read-diff)
     ;; rebuild reviewed and flagged sets:
     ;; keep only hashes that still exist in the new diff
     (clrhash rere--reviewed)
@@ -2569,14 +2598,19 @@ Only works during an interactive git rebase."
     (unless (eq major-mode 'rere-mode)
       (rere-mode))
     (setq rere--saved-window-config config)
-    (let* ((new-info (rere--read-commit-info))
-           (new-sha (plist-get new-info :sha)))
-      (rere--cleanup-old-reviewed-states new-sha)
-      (setq rere--commit-info new-info)
-      (setq rere--reviewed (rere--load-reviewed-state))
-      (setq rere--flagged (rere--load-flagged-state)))
-    (setq rere--diff-files
-          (rere--parse-diff (rere--get-raw-diff)))
+    (rere--save-reviewed-state-now)
+    (setq rere--commit-info (rere--read-commit-info))
+    (rere--read-diff)
+    ;; working tree may differ from the commit since the state was
+    ;; saved, so fall back to the state of the commit itself
+    (let ((state (or (rere--load-state rere--state-key)
+                     (rere--load-state
+                      (rere--commit-patch-id
+                       (plist-get rere--commit-info :sha))))))
+      (setq rere--reviewed (or (car state)
+                               (make-hash-table :test 'equal))
+            rere--flagged (or (cdr state)
+                              (make-hash-table :test 'equal))))
     (rere--migrate-state rere--reviewed)
     (rere--migrate-state rere--flagged)
     (setq rere--diffstat-cache nil)

@@ -702,39 +702,109 @@ index 0000000..1111111 100644
 
 ;;;; Persistence tests
 
-(ert-deftest rere-test-save-and-load-state ()
-  "Saving and loading reviewed state persists across sessions."
-  (let ((tmp-dir (make-temp-file "rere-test-rebase-" t)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'rere--rebase-dir)
-                   (lambda () tmp-dir)))
-          (let ((rere--commit-info '(:sha "abc1234"))
-                (rere--reviewed (make-hash-table :test 'equal)))
-            (puthash "hash1" t rere--reviewed)
-            (puthash "hash2" t rere--reviewed)
-            (rere--save-reviewed-state)
-            (let ((loaded (rere--load-reviewed-state)))
-              (should (= (hash-table-count loaded) 2))
-              (should (gethash "hash1" loaded))
-              (should (gethash "hash2" loaded)))))
-      (delete-directory tmp-dir t))))
+(defmacro rere-test--with-state-dir (&rest body)
+  "Run BODY during a pretend rebase with state kept in a temp dir."
+  (declare (indent 0))
+  `(let ((state-dir (make-temp-file "rere-test-state-" t)))
+     (unwind-protect
+         (cl-letf (((symbol-function 'rere--state-dir)
+                    (lambda () state-dir))
+                   ((symbol-function 'rere--rebase-in-progress-p)
+                    (lambda () t)))
+           ,@body)
+       (delete-directory state-dir t))))
 
-(ert-deftest rere-test-cleanup-old-states ()
-  "Switching commits cleans up previous review state files."
-  (let ((tmp-dir (make-temp-file "rere-test-rebase-" t)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'rere--rebase-dir)
-                   (lambda () tmp-dir)))
-          (let ((old-file (expand-file-name "rere-reviewed-old111"
-                                            tmp-dir))
-                (cur-file (expand-file-name "rere-reviewed-cur222"
-                                            tmp-dir)))
-            (with-temp-file old-file (insert "hash1\n"))
-            (with-temp-file cur-file (insert "hash2\n"))
-            (rere--cleanup-old-reviewed-states "cur222")
-            (should-not (file-exists-p old-file))
-            (should (file-exists-p cur-file))))
-      (delete-directory tmp-dir t))))
+(defun rere-test--table (&rest keys)
+  "Return an equal hash table holding KEYS."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (k keys table)
+      (puthash k t table))))
+
+(ert-deftest rere-test-save-and-load-state ()
+  "Reviewed and flagged state round-trips through its state file."
+  (rere-test--with-state-dir
+    (with-temp-buffer
+      (rere-mode)
+      (setq rere--state-key "abc123"
+            rere--reviewed (rere-test--table "hash1" "hash2")
+            rere--flagged (rere-test--table "h-flagged"))
+      (rere--save-reviewed-state)
+      (let ((state (rere--load-state "abc123")))
+        (should (= (hash-table-count (car state)) 2))
+        (should (gethash "hash1" (car state)))
+        (should (gethash "h-flagged" (cdr state)))
+        (should-not (gethash "h-flagged" (car state))))
+      (should-not (rere--load-state "def456")))))
+
+(ert-deftest rere-test-save-empty-state-deletes-file ()
+  "Undoing every review removes the state file of the diff."
+  (rere-test--with-state-dir
+    (with-temp-buffer
+      (rere-mode)
+      (setq rere--state-key "abc123"
+            rere--reviewed (rere-test--table "hash1")
+            rere--flagged (rere-test--table))
+      (rere--save-reviewed-state)
+      (should (rere--load-state "abc123"))
+      (clrhash rere--reviewed)
+      (rere--save-reviewed-state)
+      (should-not (file-exists-p (rere--state-file "abc123"))))))
+
+(ert-deftest rere-test-save-outside-rebase ()
+  "No state is written once the rebase is over."
+  (rere-test--with-state-dir
+    (cl-letf (((symbol-function 'rere--rebase-in-progress-p) #'ignore))
+      (with-temp-buffer
+        (rere-mode)
+        (setq rere--state-key "abc123"
+              rere--reviewed (rere-test--table "hash1"))
+        (rere--save-reviewed-state)
+        (should-not (directory-files state-dir nil "\\`[^.]"))))))
+
+(ert-deftest rere-test-prune-oldest-states ()
+  "Saving a new state beyond the limit deletes the oldest ones."
+  (rere-test--with-state-dir
+    (with-temp-buffer
+      (rere-mode)
+      (setq rere--reviewed (rere-test--table "hash1"))
+      (dolist (key '("a1" "b2" "c3"))
+        (setq rere--state-key key)
+        (rere--save-reviewed-state))
+      (set-file-times (rere--state-file "a1") '(0 0))
+      (set-file-times (rere--state-file "b2") '(0 10))
+      (set-file-times (rere--state-file "c3") '(0 20))
+      (let ((rere-state-limit 2))
+        (setq rere--state-key "d4")
+        (rere--save-reviewed-state))
+      (should (equal (directory-files state-dir nil "\\`[^.]")
+                     '("c3" "d4"))))))
+
+(ert-deftest rere-test-debounced-save ()
+  "Debounced save schedules timer and immediate save executes now."
+  (rere-test--with-state-dir
+    (with-temp-buffer
+      (rere-mode)
+      (setq rere--state-key "deb123"
+            rere--reviewed (rere-test--table "h1"))
+      (rere--schedule-save-reviewed-state)
+      (should (timerp rere--save-state-timer))
+      (rere--save-reviewed-state-now)
+      (should-not rere--save-state-timer)
+      (should (file-exists-p (rere--state-file "deb123"))))))
+
+(ert-deftest rere-test-state-key-survives-rebase ()
+  "A commit rebased onto a new base keeps the patch ID of its diff."
+  (rere-test--with-repo
+    (rere-test--commit "base" "f" "1\n")
+    (rere-test--commit "A" "a" "a\n")
+    (let ((before (rere--commit-patch-id "HEAD")))
+      (rere-test--git "checkout" "-q" "-b" "other" "HEAD~1")
+      (rere-test--commit "other" "o" "o\n")
+      (rere-test--git "checkout" "-q" "-")
+      (rere-test--git "rebase" "-q" "other")
+      (rere-test--rebase-edit "HEAD~1")
+      (should before)
+      (should (equal (rere--patch-id (rere--get-raw-diff)) before)))))
 
 (ert-deftest rere-test-reviewed-section-hidden-overlay ()
   "Reviewed section is collapsed and not rendered by default."
@@ -1502,25 +1572,6 @@ With NO-LINE-NUMBERS, render without the line number gutter."
         (rere--render-buffer))
       (should (string-match-p "100% reviewed" msg)))))
 
-(ert-deftest rere-test-debounced-save ()
-  "Debounced save schedules timer and immediate save executes now."
-  (let ((tmp-dir (make-temp-file "rere-test-debounce-" t)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'rere--rebase-dir)
-                   (lambda () tmp-dir)))
-          (with-temp-buffer
-            (rere-mode)
-            (setq rere--commit-info '(:sha "deb123"))
-            (setq rere--reviewed (make-hash-table :test 'equal))
-            (puthash "h1" t rere--reviewed)
-            (rere--schedule-save-reviewed-state)
-            (should (timerp rere--save-state-timer))
-            (rere--save-reviewed-state-now)
-            (should-not rere--save-state-timer)
-            (let ((file (expand-file-name "rere-reviewed-deb123" tmp-dir)))
-              (should (file-exists-p file)))))
-      (delete-directory tmp-dir t))))
-
 (ert-deftest rere-test-reviewed-section-washer ()
   "Reviewed section uses lazy washer to render content on demand."
   (with-temp-buffer
@@ -1791,24 +1842,6 @@ With NO-LINE-NUMBERS, render without the line number gutter."
       (should (eq (oref sec type) 'rere-file-section))
       (should (equal (rere-file-diff-filename (oref sec value))
                      "bar.el")))))
-
-(ert-deftest rere-test-save-and-load-flagged-state ()
-  "Save and load flagged state to/from rebase dir."
-  (let ((tmp-dir (make-temp-file "rere-test-flagged-" t)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'rere--rebase-dir)
-                   (lambda () tmp-dir)))
-          (with-temp-buffer
-            (rere-mode)
-            (setq rere--commit-info '(:sha "flag123"))
-            (setq rere--reviewed (make-hash-table :test 'equal))
-            (setq rere--flagged (make-hash-table :test 'equal))
-            (puthash "h-flagged" t rere--flagged)
-            (rere--save-reviewed-state)
-            (let ((loaded (rere--load-flagged-state)))
-              (should (gethash "h-flagged" loaded)))))
-      (delete-directory tmp-dir t))))
-
 
 ;;;; Incremental update equivalence
 

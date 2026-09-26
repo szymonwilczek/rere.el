@@ -48,7 +48,10 @@ you review code as well, go ahead - that's why this package is public.
 - *Persistent Review State:* Remembers reviewed and flagged lines across
   buffer reloads and rebase sessions via content-addressed hashing.  A
   line is identified by its file, content and occurrence, so edits
-  elsewhere in the file do not reset it.
+  elsewhere in the file do not reset it.  State is kept per commit
+  under its stable patch ID in =.git/rere/=, so a commit that is
+  rebased again without changing its diff keeps its review.  Up to
+  ~rere-state-limit~ commits are kept, the oldest are deleted first.
 - *Magit-Style Partial Review:* Like Magit's staged and unstaged diffs,
   pending changes are shown on top of the already reviewed ones: reviewed
   lines stay visible as context around what is left to review, trimmed to
@@ -159,6 +162,7 @@ Visual selections are supported for =s=, =u=, and =m=.
 | ~rere-show-diffstat~     | ~t~       | Display per-file diffstat summary section.  |
 | ~rere-show-line-numbers~ | ~t~       | Show file line numbers next to diff lines.  |
 | ~rere-context-lines~     | ~3~       | Context lines around changes (like =git -U=). |
+| ~rere-state-limit~       | ~500~     | Commits whose review state is kept.         |
 
 ** Faces
 
