@@ -1914,6 +1914,20 @@ With NO-LINE-NUMBERS, render without the line number gutter."
         (should (equal (get-text-property (point) 'rere-line-hash)
                        (rere-diff-line-hash target-dl)))))))
 
+(ert-deftest rere-test-goto-pending-and-reviewed ()
+  "Jump to the category headings using P and R."
+  (with-temp-buffer
+    (rere-mode)
+    (setq rere--diff-files
+          (rere--parse-diff rere-test--sample-diff))
+    (rere--render-buffer)
+    (goto-char (point-max))
+    (rere-goto-pending)
+    (should (looking-at "Pending review"))
+    (goto-char (point-min))
+    (rere-goto-reviewed)
+    (should (looking-at "Reviewed changes"))))
+
 (ert-deftest rere-test-next-and-previous-pending-file ()
   "Navigate between files with pending changes using { and }."
   (with-temp-buffer

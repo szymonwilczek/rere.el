@@ -41,6 +41,7 @@
 ;;   u     - smart undo (category/file/hunk/line)
 ;;   n / p - jump to next/previous diff line
 ;;   ] / [ - jump to next/previous file
+;;   P / R - jump to Pending review / Reviewed changes
 ;;   RET   - open source file at diff line
 ;;   TAB   - toggle section visibility
 ;;   r     - refresh diff
@@ -2296,6 +2297,22 @@ resolved before 100% review can be reached."
         (goto-char found)
       (message "[rere] No flagged lines found"))))
 
+(defun rere--goto-category (type)
+  "Move point to the heading of the category section TYPE."
+  (if-let* ((section (rere--root-child type)))
+      (goto-char (oref section start))
+    (message "[rere] No such section")))
+
+(defun rere-goto-pending ()
+  "Move point to the Pending review heading."
+  (interactive)
+  (rere--goto-category 'rere-pending))
+
+(defun rere-goto-reviewed ()
+  "Move point to the Reviewed changes heading."
+  (interactive)
+  (rere--goto-category 'rere-reviewed))
+
 (defun rere-next-diff-line ()
   "Move point to next reviewable diff line, skipping context."
   (interactive)
@@ -2531,6 +2548,8 @@ New or modified lines appear in Pending."
     (define-key map (kbd "c") #'rere-toggle-context)
     (define-key map (kbd "m") #'rere-toggle-flag)
     (define-key map (kbd "M") #'rere-next-flagged)
+    (define-key map (kbd "P") #'rere-goto-pending)
+    (define-key map (kbd "R") #'rere-goto-reviewed)
     (define-key map (kbd "q") #'rere-quit)
     map)
   "Keymap for `rere-mode'.")
@@ -2549,6 +2568,8 @@ New or modified lines appear in Pending."
       (evil-local-set-key state (kbd "c") #'rere-toggle-context)
       (evil-local-set-key state (kbd "m") #'rere-toggle-flag)
       (evil-local-set-key state (kbd "M") #'rere-next-flagged)
+      (evil-local-set-key state (kbd "P") #'rere-goto-pending)
+      (evil-local-set-key state (kbd "R") #'rere-goto-reviewed)
       (evil-local-set-key state (kbd "s") #'rere-smart-accept)
       (evil-local-set-key state (kbd "S") #'rere-smart-accept)
       (evil-local-set-key state (kbd "u") #'rere-unaccept)
@@ -2587,6 +2608,8 @@ New or modified lines appear in Pending."
       (kbd "c") #'rere-toggle-context
       (kbd "m") #'rere-toggle-flag
       (kbd "M") #'rere-next-flagged
+      (kbd "P") #'rere-goto-pending
+      (kbd "R") #'rere-goto-reviewed
       (kbd "g g") #'beginning-of-buffer
       (kbd "G") #'end-of-buffer)
     (evil-define-key* 'visual rere-mode-map

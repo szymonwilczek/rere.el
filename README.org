@@ -138,12 +138,14 @@ you review code as well, go ahead - that's why this package is public.
 
 *** Navigation
 
-| Key   | Command                | Action                               |
-|-------+------------------------+--------------------------------------|
+| Key     | Command                | Action                               |
+|---------+------------------------+--------------------------------------|
 | =n= / =p= | ~rere-next-diff-line~    | Jump to next / previous diff line    |
-| =]= / =[= | ~rere-next-file~         | Jump to next / previous file         |
-| =}= / ={= | ~rere-next-pending-file~ | Jump to next / previous pending file |
-| =RET=   | ~rere-open-file~         | Open source file at diff line        |
+| =]= / =[=   | ~rere-next-file~         | Jump to next / previous file         |
+| =}= / ={=   | ~rere-next-pending-file~ | Jump to next / previous pending file |
+| =P=       | ~rere-goto-pending~      | Jump to Pending review heading       |
+| =R=       | ~rere-goto-reviewed~     | Jump to Reviewed changes heading     |
+| =RET=     | ~rere-open-file~         | Open source file at diff line        |
 
 *** Display
 
