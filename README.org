@@ -153,7 +153,7 @@ you review code as well, go ahead - that's why this package is public.
 | =f=   | ~rere-toggle-focus~   | Toggle focus mode on file at point     |
 | =c=   | ~rere-toggle-context~ | Toggle context lines in diff hunks     |
 | =r=   | ~rere-refresh~        | Re-parse diff, preserve reviewed state |
-| =q=   | ~rere-quit~           | Restore window layout and quit         |
+| =q=   | ~rere-quit~           | Quit, restoring a fullscreen layout    |
 
 All bindings work in both Emacs and Evil (normal, motion, and visual states).
 Visual selections are supported for =s=, =u=, and =m=.
@@ -169,6 +169,7 @@ Visual selections are supported for =s=, =u=, and =m=.
 | ~rere-context-lines~     | ~3~       | Context lines around changes (like =git -U=). |
 | ~rere-state-limit~       | ~500~     | Commits whose review state is kept.         |
 | ~rere-binary-file-size~  | ~1 MiB~   | Diff files this large as binary, unread.    |
+| ~rere-fullscreen~        | ~nil~     | Take the whole frame, restore it on quit.   |
 
 ** Faces
 

@@ -96,6 +96,14 @@ Reviewed lines shown as context count as context lines too."
   :type 'boolean
   :group 'rere)
 
+(defcustom rere-fullscreen nil
+  "Whether rere takes the whole frame.
+When non-nil, `rere' deletes the other windows and `rere-quit'
+restores the window layout from before.  When nil, the rere buffer
+opens in the selected window like any other buffer."
+  :type 'boolean
+  :group 'rere)
+
 (defcustom rere-binary-file-size (* 1024 1024)
   "Size in bytes from which files are diffed as binary without reading.
 Git reads a whole file to tell whether it is binary, which for large
@@ -201,7 +209,7 @@ the states written longest ago are deleted first."
   "Overlay highlighting the line at point.")
 
 (defvar-local rere--saved-window-config nil
-  "Window configuration before entering rere.")
+  "Window configuration before entering rere, if `rere-fullscreen'.")
 
 (defvar-local rere--total-lines 0
   "Total number of reviewable diff lines.")
@@ -2492,7 +2500,7 @@ New or modified lines appear in Pending."
              rere--total-lines)))
 
 (defun rere-quit ()
-  "Quit the rere buffer and restore windows."
+  "Quit the rere buffer and restore windows taken by `rere-fullscreen'."
   (interactive)
   (rere--save-reviewed-state-now)
   (let ((config rere--saved-window-config))
@@ -2679,10 +2687,11 @@ Only works during an interactive git rebase."
     (user-error
      "[rere] Not currently in an interactive rebase"))
   (let* ((repo-dir default-directory)
-         (config (current-window-configuration))
+         (config (and rere-fullscreen (current-window-configuration)))
          (buf (get-buffer-create rere-buffer-name)))
     (switch-to-buffer buf)
-    (delete-other-windows)
+    (when rere-fullscreen
+      (delete-other-windows))
     (setq default-directory repo-dir)
     (unless (eq major-mode 'rere-mode)
       (rere-mode))

@@ -762,6 +762,40 @@ index 0000000..1111111 100644
          (when-let* ((buf (get-buffer rere-buffer-name)))
            (kill-buffer buf)))))))
 
+;;;; Window layout tests
+
+(defun rere-test--open-and-quit (fullscreen)
+  "Open rere beside another window with `rere-fullscreen' FULLSCREEN.
+Return the window counts after opening and after quitting."
+  (rere-test--with-repo
+   (rere-test--commit "base" "f" "1\n")
+   (rere-test--commit "A" "a" "a\n")
+   (let ((process-environment
+          (cons "GIT_SEQUENCE_EDITOR=sed -i s/^pick/edit/"
+                process-environment))
+         (rere-fullscreen fullscreen))
+     (rere-test--git "rebase" "-i" "HEAD~1")
+     (save-window-excursion
+       (unwind-protect
+           (progn
+             (delete-other-windows)
+             (split-window-right)
+             (rere)
+             (let ((opened (length (window-list))))
+               (with-current-buffer rere-buffer-name
+                 (rere-quit))
+               (list opened (length (window-list)))))
+         (when-let* ((buf (get-buffer rere-buffer-name)))
+           (kill-buffer buf)))))))
+
+(ert-deftest rere-test-opens-as-a-buffer ()
+  "By default rere opens in the selected window and keeps the others."
+  (should (equal (rere-test--open-and-quit nil) '(2 2))))
+
+(ert-deftest rere-test-fullscreen ()
+  "With `rere-fullscreen' rere takes the frame and quit restores it."
+  (should (equal (rere-test--open-and-quit t) '(1 2))))
+
 ;;;; Persistence tests
 
 (defmacro rere-test--with-state-dir (&rest body)
@@ -1453,18 +1487,18 @@ With NO-LINE-NUMBERS, render without the line number gutter."
 (ert-deftest rere-test-accept-keeps-screen-row ()
   "Accepting a line keeps the next line on the same screen row."
   (rere-test--with-window-at-row 5
-    (rere-smart-accept)
-    (should (equal (rere-test--content-at-point)
-                   "    (new-other)"))
-    (should (= (rere-test--screen-row) 5))))
+                                 (rere-smart-accept)
+                                 (should (equal (rere-test--content-at-point)
+                                                "    (new-other)"))
+                                 (should (= (rere-test--screen-row) 5))))
 
 (ert-deftest rere-test-full-render-keeps-screen-row ()
   "A full render keeps the line at point on the same screen row."
   (rere-test--with-window-at-row 7
-    (rere-toggle-context)
-    (should (equal (rere-test--content-at-point)
-                   "    (new-call 1 10)"))
-    (should (= (rere-test--screen-row) 7))))
+                                 (rere-toggle-context)
+                                 (should (equal (rere-test--content-at-point)
+                                                "    (new-call 1 10)"))
+                                 (should (= (rere-test--screen-row) 7))))
 
 ;;;; Context trimming tests
 
