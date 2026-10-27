@@ -22,7 +22,7 @@ changes line-by-line without touching the Git index or working tree.
 
 For years, my personal review workflow during an interactive Git rebase
 relied on a habit I coined /unpacking a commit/. Whenever I paused at a commit
-marked with =edit=, I would unpack it, typically [[https://github.com/szymonwilczek/dotfiles/blob/main/emacs/.config/emacs/modules/git/git-mod.el#L25][like this]], and step through
+marked with =edit=, I would unpack it, typically [[https://github.com/szymonwilczek/dotfiles/blob/dd9ab5eab23e0045ca4cd914313a7db03ab36002/emacs/.config/emacs/modules/git/git-mod.el#L25][like this]], and step through
 the diff hunk by hunk using Magit's (or at the previous time - [[https://github.com/szymonwilczek/dotfiles/blob/main/emacs/.config/emacs/modules/git/git-mod.el#L4][Lazygit]]) staging
 area, verifying every change before committing it back.
 
